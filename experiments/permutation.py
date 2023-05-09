@@ -62,7 +62,7 @@ prob_mat = get_prob_mat(X, mixtures)
 from kde_ebm import plotting, mcmc
 fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
 #plt.show()
-print ('hi',mcmc.greedy_ascent_creation(prob_mat)[0][-1])
+print (mcmc.greedy_ascent_creation(prob_mat)[0][-1])
 #res = mcmc.mcmc(X, mixtures, n_iter=100000,
 #                greedy_n_iter=1000, greedy_n_init=10)
 #fig, ax = plotting.mcmc_uncert_mat(res, score_names=np.arange(X0.shape[1]).astype(str), title='', reverse=True)
@@ -138,7 +138,7 @@ def log_likelihood_ebm_individual(P, i):
 """
 if __name__ == "__main__":
     # Set up a simple matching problem
-    is_ebm = 1
+    is_ebm = 0
     K = 10
     D = 2
     eta = 0.2#0.01
@@ -157,7 +157,7 @@ if __name__ == "__main__":
     mus_perm = P_true.dot(mus)
     xs = mus_perm + eta * npr.randn(K, D)
 
-
+    ### greedy routine - for reference to VI
     def log_likelihood_ebm_S(S_int):
         p_yes = np.array(prob_mat[:, S_int, 1])
         p_no = np.array(prob_mat[:, S_int, 0])
@@ -168,54 +168,58 @@ if __name__ == "__main__":
         ll = np.sum(np.log(np.sum((1./k)*p_perm, 1)+1e-250))
         return ll
 
-    def swap_events(S):
-        event_order = S
-        new_event_order = event_order.copy()
-        swap_bm = np.random.choice(event_order.shape[0], 2, replace=False)
-        new_event_order[swap_bm] = new_event_order[swap_bm[::-1]]
-        return new_event_order
-    
     def greedy_ascent_creation(prob_mat, n_iter=1000, n_init=10):
         n_biomarkers = prob_mat.shape[1]
         starts_dict = dict((x, []) for x in range(n_init))
-        current_mu = np.zeros((n_biomarkers-1, n_biomarkers-1))
-        current_sigma = np.ones((n_biomarkers-1, n_biomarkers-1))
-        sigma_min = 1E-3
-        sigma_max = 5.
-        Psi = current_mu + npr.randn(1, n_biomarkers-1, n_biomarkers-1) * current_sigma
-        P = psi_to_birkhoff(logistic(Psi[0]))
-        current_order = np.dot(round_to_perm(P), np.arange(n_biomarkers))
+        mu_start = -2. # magic number
+        sigma_start = 5. # magic number
         for start_idx in range(n_init):
+            current_mu = mu_start + npr.randn(1, n_biomarkers-1, n_biomarkers-1)[0]
+            current_sigma = logistic(sigma_start * npr.randn(1, n_biomarkers-1, n_biomarkers-1)[0])
+            Psi = current_mu + current_sigma * npr.randn(1, n_biomarkers-1, n_biomarkers-1)
+            P = psi_to_birkhoff(logistic(Psi[0]))
+            current_order = np.dot(round_to_perm(P), np.arange(n_biomarkers))
             current_score = log_likelihood_ebm_S(current_order.astype(int))
-            starts_dict[start_idx].append(current_order)
+            starts_dict[start_idx].append([current_order, current_score])
             for iter_n in range(1, n_iter):
-                #                new_mu = npr.normal(current_mu, current_sigma)
-                #                new_sigma = sigma_min + (sigma_max - sigma_min) * current_sigma#logistic(current_sigma)
-                #                Psi = new_mu + npr.randn(1, n_biomarkers-1, n_biomarkers-1) * new_sigma
-                new_mu = npr.normal(current_mu, 1)#npr.normal(current_mu, current_sigma)
-                new_sigma = npr.uniform(sigma_min, sigma_max*logistic(current_sigma))
-                Psi = new_mu + npr.randn(1, n_biomarkers-1, n_biomarkers-1) * new_sigma
+                new_mu = (current_mu + npr.randn(1, n_biomarkers-1, n_biomarkers-1))[0]
+                new_sigma = logistic(current_sigma * npr.randn(1, n_biomarkers-1, n_biomarkers-1)[0])
+                Psi = new_mu + new_sigma * npr.randn(1, n_biomarkers-1, n_biomarkers-1)
                 P = psi_to_birkhoff(logistic(Psi[0]))
                 new_order = np.dot(round_to_perm(P), np.arange(n_biomarkers))
                 new_score = log_likelihood_ebm_S(new_order.astype(int))
                 if new_score > current_score:
-                    print (current_score, new_score)
-                    print (current_order, new_order)
-                    print (np.min(new_mu), np.max(new_mu))
-                    print (np.min(new_sigma), np.max(new_sigma))
+                    #                    print (current_order, new_order)
+                    #                    print (np.min(new_mu), np.max(new_mu), np.mean(new_mu))
+                    #                    print (np.min(new_sigma), np.max(new_sigma), np.mean(new_sigma))
                     current_order = new_order
                     current_score = new_score
                     current_mu = new_mu
                     current_sigma = new_sigma
                 starts_dict[start_idx].append([current_order, current_score])
-        #        return starts_dict
-        return current_order, current_score
+        return starts_dict
 
-    order, score = greedy_ascent_creation(prob_mat)
-    print (order, score)
+    n_init = 10
+    greedy_dict = greedy_ascent_creation(prob_mat, n_iter=10000, n_init=n_init)
+    current_order = greedy_dict[0][-1][0]
+    current_like = greedy_dict[0][-1][1]
+    fig, ax = plt.subplots()
+    for key, value in greedy_dict.items():
+        scores = [x[1] for x in value]
+        iter_n = np.arange(len(scores))+1
+        ax.plot(iter_n, scores, label='Init {}'.format(key+1))
+    ax.legend(loc=0)
+    fig.suptitle('Greedy Ascent Traces')
+    
+    for i in range(1, n_init):
+        new_order = greedy_dict[i][-1][0]
+        new_like = greedy_dict[i][-1][1]
+        if new_like > current_like:
+            current_order = new_order
+            current_like = new_like
+    print (current_order, current_like)
     print (log_likelihood_ebm_S(seq_true[0].astype(int)))
-    print (log_likelihood_ebm_S(order.astype(int)))
-    quit()
+    plt.show()
     
     # Build variational objective.
     # Variational dist is a diagonal Gaussian over the (K-1)**2 parameters
@@ -294,8 +298,8 @@ if __name__ == "__main__":
         print("Iteration {} lower bound {}".format(t, elbos[-1]))
 
         mu, log_sigma, sigma = unpack_params(params)
-        print("mu min: ", mu.min(), "\t mu max: ", mu.max())
-        print("sigma min: ", sigma.min(), "\t sigma max: ", sigma.max())
+        print("mu min: ", mu.min(), "\t mu max: ", mu.max(), "\t mu mean: ", mu.mean())
+        print("sigma min: ", sigma.min(), "\t sigma max: ", sigma.max(), "\t sigma mean: ", sigma.mean())
 
         if DO_PLOT:
             plt.cla()
