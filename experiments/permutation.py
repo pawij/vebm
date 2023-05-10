@@ -27,8 +27,11 @@ from scipy.optimize import linear_sum_assignment
 
 import autograd.numpy as np
 import autograd.numpy.random as npr
+from autograd.scipy.special import logsumexp
 from autograd import grad
 from autograd.misc.optimizers import adam
+
+from autograd.core import Node
 
 from birkhoff.primitives import \
     logit, logistic, gaussian_logp, gaussian_entropy, \
@@ -70,6 +73,19 @@ print (mcmc.greedy_ascent_creation(prob_mat)[0][-1])
 #ebm_order = res[0]
 #print (ebm_order)
 
+def unconstrained_log_prior(P, sigmasq_P):
+    """
+    Consider a product (coordinate-wise) of mixtures of
+    two gaussians with std sigma_prior and centers at 0 and 1)
+    """
+    N = P.shape[0]
+    assert P.shape == (N, N)
+    corners = np.array([0, 1])
+    diffs = P[:,:,None] - corners[None, None, :]
+    return np.sum(logsumexp(-0.5 * diffs ** 2 / sigmasq_P, axis=2)) \
+           - 0.5 * N**2 * np.log(2 * np.pi) \
+           - 0.5 * N**2 * np.log(sigmasq_P)
+
 def perm_to_P(perm):
     K = len(perm)
     P = np.zeros((K, K))
@@ -79,12 +95,32 @@ def perm_to_P(perm):
 def round_to_perm(P):
     N = P.shape[0]
     assert P.shape == (N, N)
-    row, col = linear_sum_assignment(-P)
+    try:
+        row, col = linear_sum_assignment(-P)
+    except:
+        col = linear_sum_assignment_wrapper(-P)
     P = np.zeros((N, N))
-    P[row, col] = 1.0
+    #    P[row, col] = 1.0
+    P[np.arange(N), col] = 1.0
     return P
 
+import torch
+def linear_sum_assignment_wrapper(P):
+    def hungarian(x):
+        if x.ndim == 2:
+            x = np.reshape(x, [1, x.shape[0], x.shape[1]])
+        sol = np.zeros((x.shape[0], x.shape[1]), dtype=np.int32)
+        for i in range(x.shape[0]):
+            sol[i, :] = linear_sum_assignment(x[i, :])[1].astype(np.int32)
+        return sol
+    #    listperms = hungarian(P.detach().cpu().numpy())
+    listperms = hungarian(P._value)
+    listperms = torch.from_numpy(listperms)
+    print (listperms)
+    return listperms
+
 def log_likelihood_ebm(P, t):
+    """
     #FIXME: have to cast from autograd ArrayBox to numpy
     P_numpy = numpy.asarray(P)
     if P_numpy.dtype == object:
@@ -93,8 +129,14 @@ def log_likelihood_ebm(P, t):
             temp.append([x._value for x in row])
         P = np.array(temp)
     #PW check
+    """
     # Round to nearest permutation
-    P2 = round_to_perm(P if isinstance(P, np.ndarray) else P.value)
+    #    P2 = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
+    #    P_copy = P.copy()
+    #    Phat = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
+    #    P = P * temp + (1 - temp) * Phat
+    P2 = round_to_perm(P)
+    #    P2 = round_to_perm(P._value if isinstance(P, Node) else P)
     ll = 0
     #    for i in range(M):
     #        ll += log_likelihood_ebm_individual(P2, i)
@@ -112,6 +154,17 @@ def log_likelihood_ebm(P, t):
 #    print (ll)
 #    quit()
     return ll
+
+def log_likelihood_ebm_S(S_int):
+    p_yes = np.array(prob_mat[:, S_int, 1])
+    p_no = np.array(prob_mat[:, S_int, 0])
+    k = prob_mat.shape[1]+1
+    p_perm = np.zeros((prob_mat.shape[0], k))
+    for i in range(k):
+        p_perm[:, i] = np.prod(p_yes[:, :i], 1)*np.prod(p_no[:, i:k-1], 1)
+    ll = np.sum(np.log(np.sum((1./k)*p_perm, 1)+1e-250))
+    return ll
+
 """
 def log_likelihood_ebm_individual(P, i):
     n_samples = 1
@@ -138,7 +191,7 @@ def log_likelihood_ebm_individual(P, i):
 """
 if __name__ == "__main__":
     # Set up a simple matching problem
-    is_ebm = 0
+    is_ebm = 1
     K = 10
     D = 2
     eta = 0.2#0.01
@@ -157,18 +210,9 @@ if __name__ == "__main__":
     mus_perm = P_true.dot(mus)
     xs = mus_perm + eta * npr.randn(K, D)
 
+    """
     ### greedy routine - for reference to VI
-    def log_likelihood_ebm_S(S_int):
-        p_yes = np.array(prob_mat[:, S_int, 1])
-        p_no = np.array(prob_mat[:, S_int, 0])
-        k = prob_mat.shape[1]+1
-        p_perm = np.zeros((prob_mat.shape[0], k))
-        for i in range(k):
-            p_perm[:, i] = np.prod(p_yes[:, :i], 1)*np.prod(p_no[:, i:k-1], 1)
-        ll = np.sum(np.log(np.sum((1./k)*p_perm, 1)+1e-250))
-        return ll
-
-    def greedy_ascent_creation(prob_mat, n_iter=1000, n_init=10):
+    def greedy_ascent(prob_mat, n_iter=1000, n_init=10):
         n_biomarkers = prob_mat.shape[1]
         starts_dict = dict((x, []) for x in range(n_init))
         mu_start = -2. # magic number
@@ -200,7 +244,7 @@ if __name__ == "__main__":
         return starts_dict
 
     n_init = 10
-    greedy_dict = greedy_ascent_creation(prob_mat, n_iter=10000, n_init=n_init)
+    greedy_dict = greedy_ascent(prob_mat, n_iter=10000, n_init=n_init)
     current_order = greedy_dict[0][-1][0]
     current_like = greedy_dict[0][-1][1]
     fig, ax = plt.subplots()
@@ -220,6 +264,7 @@ if __name__ == "__main__":
     print (current_order, current_like)
     print (log_likelihood_ebm_S(seq_true[0].astype(int)))
     plt.show()
+    """
     
     # Build variational objective.
     # Variational dist is a diagonal Gaussian over the (K-1)**2 parameters
@@ -257,20 +302,37 @@ if __name__ == "__main__":
 
         # Compute ELBO. Explicitly compute gaussian entropy.
         elbo = 0
-        #        for P, Psi in zip(P_samples, Psi_samples):        
+
+        #        elbo = elbo + log_likelihood_ebm(psi_to_birkhoff(logistic((mu + npr.randn(num_mcmc_samples, K-1, K-1) * sigma)[0])), t)
+        
+        #        for P, Psi in zip(P_samples, Psi_samples):
         for P in P_samples:
             if is_ebm:
+                #                print (P.dtype, P)
                 elbo = elbo + log_likelihood_ebm(P, t) / num_mcmc_samples
-                #                elbo = elbo + log_prob(P, t) / num_mcmc_samples
+                """
+                P_numpy = numpy.asarray(P)
+                if P_numpy.dtype == object:
+                    temp = []
+                    for row in P_numpy:
+                        temp.append([x._value for x in row])
+                    P = np.array(temp)
+                S = np.dot(round_to_perm(P), np.arange(P.shape[0])).astype(int)
+                elbo = elbo + log_likelihood_ebm_S(S) / num_mcmc_samples
+                """
+                #                continue
+                #                print (log_likelihood_ebm(P, t) / num_mcmc_samples, log_likelihood_ebm_S(S) / num_mcmc_samples)
             else:
+                #                print (P.dtype, P)
                 elbo = elbo + log_prob(P, t) / num_mcmc_samples
-            #            print ('0',elbo)
-            elbo = elbo - log_det_jacobian(P) / num_mcmc_samples
-            #            print ('1',elbo)
+            print ('0',elbo)
+#            elbo = elbo - log_det_jacobian(P) / num_mcmc_samples
+            #            elbo += unconstrained_log_prior(P, 0.01) / num_mcmc_samples
+            print ('1',elbo)
         #        print ('out')
         #        print (elbo)
-        elbo = elbo + gaussian_entropy(log_sigma)
-        #        print (elbo)
+#        elbo = elbo + gaussian_entropy(log_sigma)
+        print ('2',elbo)
         #        quit()
         # Minimize the negative elbo
         return -elbo# / K
