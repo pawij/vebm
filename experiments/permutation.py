@@ -124,84 +124,13 @@ def linear_sum_assignment_wrapper(P):
     return listperms
 
 def log_likelihood_ebm(P, t):
-    """
-    #FIXME: have to cast from autograd ArrayBox to numpy
-    P_numpy = numpy.asarray(P)
-    if P_numpy.dtype == object:
-        temp = []
-        for row in P_numpy:
-            temp.append([x._value for x in row])
-        P = np.array(temp)
-    #PW check
-    """
-    """
-    # Round to nearest permutation
-    P2 = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
-    T = 1E-9
-    P2 = P*T + (1-T)*P2
-    """
-    #    P_copy = P.copy()
-    #    Phat = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
-    #    Phat = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
-    #    P = P * T + (1 - T) * Phat
-    #    P2 = round_to_perm(P._value if isinstance(P, Node) else P)
-    ll = 0
-    #    for i in range(M):
-    #        ll += log_likelihood_ebm_individual(P2, i)
-    #    n_features = P2.shape[1]
-    #    S_int = np.dot(P2, np.arange(n_features)).astype(int)
-    #    p_yes = np.array(prob_mat[:, S_int, 1])
-    #    p_no = np.array(prob_mat[:, S_int, 0])
-
-    """
-    S_int = np.dot(P2, np.arange(n_features))
-    S_copy = []
-    for x in S_int:
-        for i in range(len(S_int)):
-            if np.abs(x-i) < 1E-5:
-                S_copy.append(i)                
-    #    print (S_int)
-    #    print (S_copy)
-    p_yes = np.array(prob_mat[:, S_copy, 1])
-    p_no = np.array(prob_mat[:, S_copy, 0])
-    """
-    """
-    k = prob_mat.shape[1]+1
-    p_perm = np.zeros((prob_mat.shape[0], k))
-    for i in range(k):
-        print (p_yes[:, :i].shape, p_no[:, i:k-1].shape)
-        p_perm[:, i] = np.prod(p_yes[:, :i], 1)*np.prod(p_no[:, i:k-1], 1)
-    """
-    
-    """
-    temp = []
-    for i in range(len(p_yes)):
-        #        print (np.dot(P, p_yes[i].T))
-        #        temp.append(np.dot(P*T, p_yes[i].T))
-    p_yes = np.array(temp)
-    temp = []
-    for i in range(len(p_no)):
-        #        print (np.dot(P, p_yes[i].T))
-        #        temp.append(np.dot(P*T, p_no[i].T))
-    p_no = np.array(temp)
-    """
-
-    #FIXME: check this gives the equivalent of using S_int to sort
-    #FIXME: why doesn't it converge for P2 with low T?
-    #    p_yes = np.dot(prob_mat[:, :, 1], P2.T)
-    #    p_no = np.dot(prob_mat[:, :, 0], P2.T)
     p_yes = np.dot(prob_mat[:, :, 1], P.T)
-    p_no = np.dot(prob_mat[:, :, 0], P.T)
-    
+    p_no = np.dot(prob_mat[:, :, 0], P.T)    
     k = prob_mat.shape[1]+1
-    #    p_perm = np.zeros((prob_mat.shape[0], k))
     p_perm = []
     for i in range(k):
         p_perm.append(np.prod(p_yes[:, :i], 1)*np.prod(p_no[:, i:k-1], 1))
-    p_perm = np.array(p_perm)
-    ll = np.sum(np.log(np.sum((1./k)*p_perm, 1)+1e-250))
-#    print (ll)
-#    quit()
+    ll = np.sum(np.log(np.sum((1./k)*np.array(p_perm), 1)+1e-250))
     return ll
 
 def log_likelihood_ebm_S(S_int):
@@ -245,7 +174,7 @@ if __name__ == "__main__":
     D = 2
     eta = 0.2#0.01
     mus = 2 * npr.randn(K, D)
-    num_mcmc_samples = 1
+    num_mcmc_samples = 10
     sigma_min, sigma_max = 1e-3, 5.0
 
     # Sample a true permutation (in=col, out=row)
