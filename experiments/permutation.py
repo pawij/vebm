@@ -134,10 +134,12 @@ def log_likelihood_ebm(P, t):
         P = np.array(temp)
     #PW check
     """
+    """
     # Round to nearest permutation
     P2 = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
     T = 1E-9
     P2 = P*T + (1-T)*P2
+    """
     #    P_copy = P.copy()
     #    Phat = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
     #    Phat = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
@@ -146,12 +148,12 @@ def log_likelihood_ebm(P, t):
     ll = 0
     #    for i in range(M):
     #        ll += log_likelihood_ebm_individual(P2, i)
-    n_features = P2.shape[1]
+    #    n_features = P2.shape[1]
     #    S_int = np.dot(P2, np.arange(n_features)).astype(int)
     #    p_yes = np.array(prob_mat[:, S_int, 1])
     #    p_no = np.array(prob_mat[:, S_int, 0])
 
-
+    """
     S_int = np.dot(P2, np.arange(n_features))
     S_copy = []
     for x in S_int:
@@ -162,7 +164,7 @@ def log_likelihood_ebm(P, t):
     #    print (S_copy)
     p_yes = np.array(prob_mat[:, S_copy, 1])
     p_no = np.array(prob_mat[:, S_copy, 0])
-    
+    """
     """
     k = prob_mat.shape[1]+1
     p_perm = np.zeros((prob_mat.shape[0], k))
