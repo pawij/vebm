@@ -31,8 +31,6 @@ from autograd.scipy.special import logsumexp
 from autograd import grad
 from autograd.misc.optimizers import adam
 
-from autograd.core import Node
-
 from birkhoff.primitives import \
     logit, logistic, gaussian_logp, gaussian_entropy, \
     psi_to_birkhoff, log_det_jacobian, birkhoff_to_psi
@@ -113,10 +111,16 @@ def linear_sum_assignment_wrapper(P):
         for i in range(x.shape[0]):
             sol[i, :] = linear_sum_assignment(x[i, :])[1].astype(np.int32)
         return sol
+    # trying various things to allow P to be manipulated without removing gradient calculation later
     #    listperms = hungarian(P.detach().cpu().numpy())
-    listperms = hungarian(P._value)
-    listperms = torch.from_numpy(listperms)
-    print (listperms)
+    #    listperms = hungarian(P._value)
+    #    listperms = torch.from_numpy(listperms)
+    #    listperms = hungarian(torch.tensor(P).requires_grad_(False))
+    #    listperms = hungarian(P.requires_grad(False))
+    #    listperms = listperms.requires_grad_(True)
+    #    P_copy = np.array(P, copy=True)
+    P_copy = P.astype(np.ndarray, copy=True)
+    listperms = hungarian(P_copy._value)
     return listperms
 
 def log_likelihood_ebm(P, t):
@@ -131,25 +135,68 @@ def log_likelihood_ebm(P, t):
     #PW check
     """
     # Round to nearest permutation
-    #    P2 = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
+    P2 = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
+    T = 1E-9
+    P2 = P*T + (1-T)*P2
     #    P_copy = P.copy()
     #    Phat = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
-    #    P = P * temp + (1 - temp) * Phat
-    P2 = round_to_perm(P)
+    #    Phat = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
+    #    P = P * T + (1 - T) * Phat
     #    P2 = round_to_perm(P._value if isinstance(P, Node) else P)
     ll = 0
     #    for i in range(M):
     #        ll += log_likelihood_ebm_individual(P2, i)
     n_features = P2.shape[1]
-    S_int = np.dot(P2, np.arange(n_features)).astype(int)
-    #    S_int = np.dot(P, np.arange(n_features)).astype(int)
-    #    S_int = seq_true[0].astype(int)
-    p_yes = np.array(prob_mat[:, S_int, 1])
-    p_no = np.array(prob_mat[:, S_int, 0])
+    #    S_int = np.dot(P2, np.arange(n_features)).astype(int)
+    #    p_yes = np.array(prob_mat[:, S_int, 1])
+    #    p_no = np.array(prob_mat[:, S_int, 0])
+
+
+    S_int = np.dot(P2, np.arange(n_features))
+    S_copy = []
+    for x in S_int:
+        for i in range(len(S_int)):
+            if np.abs(x-i) < 1E-5:
+                S_copy.append(i)                
+    #    print (S_int)
+    #    print (S_copy)
+    p_yes = np.array(prob_mat[:, S_copy, 1])
+    p_no = np.array(prob_mat[:, S_copy, 0])
+    
+    """
     k = prob_mat.shape[1]+1
     p_perm = np.zeros((prob_mat.shape[0], k))
     for i in range(k):
+        print (p_yes[:, :i].shape, p_no[:, i:k-1].shape)
         p_perm[:, i] = np.prod(p_yes[:, :i], 1)*np.prod(p_no[:, i:k-1], 1)
+    """
+    
+    """
+    temp = []
+    for i in range(len(p_yes)):
+        #        print (np.dot(P, p_yes[i].T))
+        #        temp.append(np.dot(P*T, p_yes[i].T))
+    p_yes = np.array(temp)
+    temp = []
+    for i in range(len(p_no)):
+        #        print (np.dot(P, p_yes[i].T))
+        #        temp.append(np.dot(P*T, p_no[i].T))
+    p_no = np.array(temp)
+    """
+
+    #FIXME: check this gives the equivalent of using S_int to sort
+    #FIXME: why doesn't it converge for P2 with low T?
+    #    p_yes = np.dot(prob_mat[:, :, 1], P2.T)
+    #    p_no = np.dot(prob_mat[:, :, 0], P2.T)
+    p_yes = np.dot(prob_mat[:, :, 1], P.T)
+    p_no = np.dot(prob_mat[:, :, 0], P.T)
+    
+    k = prob_mat.shape[1]+1
+    #    p_perm = np.zeros((prob_mat.shape[0], k))
+    p_perm = []
+    for i in range(k):
+        p_perm.append(np.prod(p_yes[:, :i], 1)*np.prod(p_no[:, i:k-1], 1))
+    p_perm = np.array(p_perm)
     ll = np.sum(np.log(np.sum((1./k)*p_perm, 1)+1e-250))
 #    print (ll)
 #    quit()
@@ -196,7 +243,7 @@ if __name__ == "__main__":
     D = 2
     eta = 0.2#0.01
     mus = 2 * npr.randn(K, D)
-    num_mcmc_samples = 10
+    num_mcmc_samples = 1
     sigma_min, sigma_max = 1e-3, 5.0
 
     # Sample a true permutation (in=col, out=row)
@@ -325,14 +372,14 @@ if __name__ == "__main__":
             else:
                 #                print (P.dtype, P)
                 elbo = elbo + log_prob(P, t) / num_mcmc_samples
-            print ('0',elbo)
+#            print ('0',elbo)
 #            elbo = elbo - log_det_jacobian(P) / num_mcmc_samples
             #            elbo += unconstrained_log_prior(P, 0.01) / num_mcmc_samples
-            print ('1',elbo)
+#            print ('1',elbo)
         #        print ('out')
         #        print (elbo)
 #        elbo = elbo + gaussian_entropy(log_sigma)
-        print ('2',elbo)
+#        print ('2',elbo)
         #        quit()
         # Minimize the negative elbo
         return -elbo# / K
