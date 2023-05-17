@@ -37,7 +37,7 @@ from birkhoff.primitives import \
 
 import scipy as sp
 
-npr.seed(0)
+npr.seed(2)
 
 DO_PLOT = False
 
@@ -63,13 +63,16 @@ prob_mat = get_prob_mat(X, mixtures)
 from kde_ebm import plotting, mcmc
 fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
 #plt.show()
-print (mcmc.greedy_ascent_creation(prob_mat)[0][-1])
-#res = mcmc.mcmc(X, mixtures, n_iter=100000,
-#                greedy_n_iter=1000, greedy_n_init=10)
-#fig, ax = plotting.mcmc_uncert_mat(res, score_names=np.arange(X0.shape[1]).astype(str), title='', reverse=True)
-#res.sort(reverse=True)    
-#ebm_order = res[0]
-#print (ebm_order)
+#seq_greedy_ml = mcmc.greedy_ascent_creation(prob_mat)[0][-1]
+
+res = mcmc.mcmc(X, mixtures, n_iter=100000,
+                greedy_n_iter=1000, greedy_n_init=10)
+fig, ax = plotting.mcmc_uncert_mat(res, score_names=np.arange(X0.shape[1]).astype(str), title='', reverse=True)
+res.sort(reverse=True)    
+ebm_order = res[0]
+print (ebm_order)
+print (sp.stats.kendalltau(ebm_order.ordering, seq_true))
+
 
 def unconstrained_log_prior(P, sigmasq_P):
     """
@@ -125,12 +128,13 @@ def linear_sum_assignment_wrapper(P):
 
 def log_likelihood_ebm(P, t):
     p_yes = np.dot(prob_mat[:, :, 1], P.T)
-    p_no = np.dot(prob_mat[:, :, 0], P.T)    
+    p_no = np.dot(prob_mat[:, :, 0], P.T)
     k = prob_mat.shape[1]+1
     p_perm = []
     for i in range(k):
         p_perm.append(np.prod(p_yes[:, :i], 1)*np.prod(p_no[:, i:k-1], 1))
-    ll = np.sum(np.log(np.sum((1./k)*np.array(p_perm), 1)+1e-250))
+    p_perm = np.array(p_perm).T
+    ll = np.sum(np.log(np.sum((1./k)*p_perm, 1)+1e-250))
     return ll
 
 def log_likelihood_ebm_S(S_int):
@@ -143,34 +147,13 @@ def log_likelihood_ebm_S(S_int):
     ll = np.sum(np.log(np.sum((1./k)*p_perm, 1)+1e-250))
     return ll
 
-"""
-def log_likelihood_ebm_individual(P, i):
-    n_samples = 1
-    n_features = P.shape[1]
-    S_int = np.dot(P, np.arange(n_features)).astype(int)
-    
-    arange_Np1 = np.arange(0, n_features+1)
-    p_perm_k = np.zeros((n_samples, n_features+1))
-    p_yes = np.array(prob_mat[i, :, 1]).reshape(n_samples, S_int.shape[0], 1)
-    p_no = np.array(prob_mat[i, :, 0]).reshape(n_samples, S_int.shape[0], 1)
-    # Leon's clever cumulative probability code
-    cp_yes = np.cumprod(p_yes[:, S_int], 1)
-    cp_no = np.cumprod(p_no[:, S_int[::-1]], 1)
-    for i in arange_Np1:
-        if i == 0:
-            p_perm_k[:, i] = cp_no[:,n_features-1]
-        elif i == n_features:
-            p_perm_k[:, i] = cp_yes[:,n_features-1]
-        else:
-            p_perm_k[:, i] = cp_yes[:,i-1] * cp_no[:,n_features-i-1]
-    p_perm_k[p_perm_k==0] = np.finfo(float).eps
-    #FIXME: check
-    return np.log(np.sum(p_perm_k))
-"""
+def q_entropy(log_sigmasq_P, temp):
+    return gaussian_entropy(0.5 * log_sigmasq_P) + log_sigmasq_P.size * np.log(temp)
+
 if __name__ == "__main__":
     # Set up a simple matching problem
     is_ebm = 1
-    K = 10
+    K = n_bms
     D = 2
     eta = 0.2#0.01
     mus = 2 * npr.randn(K, D)
@@ -280,37 +263,20 @@ if __name__ == "__main__":
 
         # Compute ELBO. Explicitly compute gaussian entropy.
         elbo = 0
-
-        #        elbo = elbo + log_likelihood_ebm(psi_to_birkhoff(logistic((mu + npr.randn(num_mcmc_samples, K-1, K-1) * sigma)[0])), t)
-        
-        #        for P, Psi in zip(P_samples, Psi_samples):
         for P in P_samples:
             if is_ebm:
-                #                print (P.dtype, P)
-                elbo = elbo + log_likelihood_ebm(P, t) / num_mcmc_samples
-                """
-                P_numpy = numpy.asarray(P)
-                if P_numpy.dtype == object:
-                    temp = []
-                    for row in P_numpy:
-                        temp.append([x._value for x in row])
-                    P = np.array(temp)
-                S = np.dot(round_to_perm(P), np.arange(P.shape[0])).astype(int)
-                elbo = elbo + log_likelihood_ebm_S(S) / num_mcmc_samples
-                """
-                #                continue
-                #                print (log_likelihood_ebm(P, t) / num_mcmc_samples, log_likelihood_ebm_S(S) / num_mcmc_samples)
+                elbo += log_likelihood_ebm(P, t) / num_mcmc_samples
             else:
-                #                print (P.dtype, P)
-                elbo = elbo + log_prob(P, t) / num_mcmc_samples
-#            print ('0',elbo)
-#            elbo = elbo - log_det_jacobian(P) / num_mcmc_samples
+                elbo += log_prob(P, t) / num_mcmc_samples
+            #            print ('0',elbo)
+            elbo -= log_det_jacobian(P) / num_mcmc_samples
             #            elbo += unconstrained_log_prior(P, 0.01) / num_mcmc_samples
-#            print ('1',elbo)
-        #        print ('out')
-        #        print (elbo)
-#        elbo = elbo + gaussian_entropy(log_sigma)
-#        print ('2',elbo)
+        #            print ('1',elbo)
+        #FIXME: understand difference between these two entropy terms
+        #FIXME: understand why entropy term produces larger mean inferred sigma and hence makes inference more variable
+        #        elbo += gaussian_entropy(log_sigma)
+        #        elbo += q_entropy(log_sigma, 1E0)
+        #        print ('2',elbo)
         #        quit()
         # Minimize the negative elbo
         return -elbo# / K
@@ -363,16 +329,17 @@ if __name__ == "__main__":
     #    init_mean = birkhoff_to_psi(1. / K * np.ones((K - 1, K - 1))).ravel()
     init_mean = birkhoff_to_psi(1. / K * np.ones((K, K))).ravel()
     init_mean = logit(init_mean)
+    #FIXME: magic number
     init_logit_std = -3 * np.ones((K - 1) ** 2)
-    #    init_logit_std = -0.1 * np.ones((K - 1) ** 2)
     init_var_params = np.concatenate([init_mean, init_logit_std])
-    variational_params = adam(gradient, init_var_params, step_size=1E-1, num_iters=100, callback=callback)
+    num_iters = 100
+    variational_params = adam(gradient, init_var_params, step_size=1E-1, num_iters=num_iters, callback=callback)
     # fig.savefig("permutation_K20.png")
 
     # Plot the elbo
     plt.figure(figsize=(6,4))
     plt.plot(elbos)
-    plt.xlim(0, 100)
+    plt.xlim(0, num_iters)
     plt.xlabel("Iteration")
     plt.ylabel("ELBO")
     plt.tight_layout()
@@ -381,18 +348,28 @@ if __name__ == "__main__":
     # Sample from the posterior and show samples
     mu_post, log_sigma_post, sigma_post = unpack_params(variational_params)
 
+    fig, ax = plt.subplots()
+    ax.imshow(P_true, interpolation="none", vmin=0, vmax=1)
+    ax.set_title("True $\Pi$")
+    
     fig = plt.figure(figsize=(10, 10), facecolor='white')
     for i in range(4):
         for j in range(4):
             Psi_sample = mu_post + npr.randn(K - 1, K - 1) * sigma_post
             P_sample = psi_to_birkhoff(logistic(Psi_sample))
+
+            ax = fig.add_subplot(4, 4, i*4 + j +1, frameon=True)
+            ax.imshow(P_sample, interpolation="none", vmin=0, vmax=1)
+            ax.set_title("Inferred $g(\mu)$")
+            
             # Round doubly stochastic matrix P to the nearest permutation matrix
             row, col = linear_sum_assignment(-P_sample.T)
 
             P_sample = round_to_perm(P_sample)
             print (np.dot(P_sample, np.arange(P_sample.shape[0])), np.dot(P_true, np.arange(P_true.shape[0])))
             print (sp.stats.kendalltau(np.dot(P_sample, np.arange(P_sample.shape[0])), np.dot(P_true, np.arange(P_true.shape[0]))))
-            
+
+            """
             ax = fig.add_subplot(4, 4, i*4 + j +1, frameon=True)
             for k in range(K):
                 plt.plot(xs[k, 0], xs[k, 1], 'sk', markersize=8)
@@ -403,7 +380,7 @@ if __name__ == "__main__":
                          color=colors[k % len(colors)],  markersize=6)
                 plt.plot(xs[col[k], 0], xs[col[k], 1], 's',
                          markersize=6, color=colors[k % len(colors)])
-                
+            
             # Scale bar
             plt.plot([-5,-5+2*eta], [5,5], '-k', lw=3)
 
@@ -412,8 +389,10 @@ if __name__ == "__main__":
             ax.set_xticks([])
             ax.set_yticks([])
             ax.set_title("Sample {}".format(i*4+j+1))
-
+            """
+            
     plt.tight_layout()
     plt.savefig("permutation_K20_xy.png")
+    plt.show()
 
 from pybasicbayes.util.text import progprint_xrange
