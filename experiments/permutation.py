@@ -36,12 +36,17 @@ from birkhoff.primitives import \
     psi_to_birkhoff, log_det_jacobian, birkhoff_to_psi
 
 import scipy as sp
+import time
+from functools import partial
+import pathos
 
-npr.seed(2)
+try:
+    seed = int(sys.argv[1])
+except IndexError:
+    seed = 42
+npr.seed(seed)
 
 DO_PLOT = False
-
-#PW
 
 import numpy
 from sim_funcs import gen_data
@@ -64,16 +69,36 @@ from kde_ebm import plotting, mcmc
 fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
 #plt.show()
 #seq_greedy_ml = mcmc.greedy_ascent_creation(prob_mat)[0][-1]
-
+"""
+t_start = time.time()
 res = mcmc.mcmc(X, mixtures, n_iter=100000,
                 greedy_n_iter=1000, greedy_n_init=10)
-fig, ax = plotting.mcmc_uncert_mat(res, score_names=np.arange(X0.shape[1]).astype(str), title='', reverse=True)
-res.sort(reverse=True)    
+t_mcmc = time.time()-t_start
+print ('after MCMC',t_mcmc)
+fig, ax = plotting.mcmc_uncert_mat(res, score_names=np.arange(X0.shape[1]).astype(str), title='')
+res.sort(reverse=True)
+
+freq_mcmc = np.zeros(len(seq_true[0]))
+print (np.array(res).shape, len(seq_true[0]))
+for i in range(len(res)):
+    for j in range(len(seq_true[0])):
+        if seq_true[0][j] == res[i].ordering[j]:
+            freq_mcmc[j] += 1
+freq_mcmc /= 100000
+probright_mcmc, count = 0, 0
+for i in range(len(seq_true[0])):
+    if seq_true[0][i] != res[0].ordering[i]:
+        probright_mcmc += freq_mcmc[i]
+        count += 1
+if count != 0:
+    probright_mcmc /= count
+print (probright_mcmc)
+
 ebm_order = res[0]
 print (ebm_order)
-print (sp.stats.kendalltau(ebm_order.ordering, seq_true))
-
-
+kt_mcmc = sp.stats.kendalltau(ebm_order.ordering, seq_true)
+print (kt_mcmc)
+"""
 def unconstrained_log_prior(P, sigmasq_P):
     """
     Consider a product (coordinate-wise) of mixtures of
@@ -157,7 +182,8 @@ if __name__ == "__main__":
     D = 2
     eta = 0.2#0.01
     mus = 2 * npr.randn(K, D)
-    num_mcmc_samples = 10
+    num_mcmc_samples = 4
+    # FIXME: magic numbers. Do they matter? _max = 50. doesn't seem to make a difference
     sigma_min, sigma_max = 1e-3, 5.0
 
     # Sample a true permutation (in=col, out=row)
@@ -170,8 +196,224 @@ if __name__ == "__main__":
     # Sample data according to this permutation
     mus_perm = P_true.dot(mus)
     xs = mus_perm + eta * npr.randn(K, D)
+    
+    # Build variational objective.
+    # Variational dist is a diagonal Gaussian over the (K-1)**2 parameters
+    def unpack_params(params):
+        assert params.shape == (2 * (K - 1)**2, )
+        mu = np.reshape((params[:(K-1)**2]), (K-1, K-1))
+        logit_sigma = np.reshape((params[(K-1)**2:]), (K-1, K-1))
+        sigma = sigma_min + (sigma_max - sigma_min) * logistic(logit_sigma)
+        log_sigma = np.log(sigma)
+        return mu, log_sigma, sigma
 
-    """
+    # Set up the log probability objective
+    # Assume a uniform prior on P?
+    # Right now this is just the likelihood...
+    def log_prob(P, t):
+        # np.dot(P, mus) is similar to S_int = np.dot(P2, np.arange(n_features)).astype(int), i.e., it makes the likelihood dependent on P
+        # BUT not the same as have rounded the matrix from doubly stochastic to permutation; does this change the inference?
+        # xs, mus, eta, are equivalent to prob_mat, i.e., they are the data generated from the true permutation / sequence
+        # BUT not the same as have used different distributions to generate data, as opposed to directly from doubly stochastic matrix parameters
+        return np.sum(gaussian_logp(xs, np.dot(P, mus), eta))
+
+    def variational_objective(params, t):
+        """Provides a stochastic estimate of the variational lower bound."""
+        mu, log_sigma, sigma = unpack_params(params)
+        """
+        fig, ax = plt.subplots()
+        try:
+            ax.hist(npr.normal(mu[0,0]._value, sigma[0,0]._value, 100))
+        except AttributeError:
+            ax.hist(npr.normal(mu[0,0], sigma[0,0], 100))
+        plt.show()
+        """
+        Psi_samples = mu + npr.randn(num_mcmc_samples, K-1, K-1) * sigma
+        P_samples = [psi_to_birkhoff(logistic(Psi)) for Psi in Psi_samples]
+        """
+        Psi_samples = mu + npr.randn(num_mcmc_samples, K-1, K-1) * sigma
+        Psi_samples = [logistic(Psi) for Psi in Psi_samples]
+        #PW
+        #        P_samples = [psi_to_birkhoff(logistic(Psi)) for Psi in Psi_samples]
+        #        P_samples = [psi_to_birkhoff(logistic(Psi), -1) for Psi in Psi_samples]
+        import multiprocessing_on_dill as mp
+        pool = mp.Pool()
+        pool.ncpus = 4
+        Psi_samples = mu + npr.randn(num_mcmc_samples, K-1, K-1) * sigma
+        Psi_samples = [logistic(Psi) for Psi in Psi_samples]
+        copier = partial(psi_to_birkhoff,
+                         Psi_samples)
+        # will return shape (n_start, 1)
+        P_samples = np.array(pool.map(copier, range(4)))        
+        #        print ('P_samples',P_samples)        
+        #        quit()
+        """
+        # Compute ELBO. Explicitly compute gaussian entropy.
+        elbo = 0
+        for P in P_samples:
+            if is_ebm:
+                elbo += log_likelihood_ebm(P, t) / num_mcmc_samples
+            else:
+                elbo += log_prob(P, t) / num_mcmc_samples
+            #            print ('0',elbo)
+            elbo -= log_det_jacobian(P) / num_mcmc_samples
+            #            elbo += unconstrained_log_prior(P, 0.01) / num_mcmc_samples
+        #            print ('1',elbo)
+        #FIXME: understand difference between these two entropy terms
+        #FIXME: understand why entropy term produces larger mean inferred sigma and hence makes inference more variable
+        #        elbo += gaussian_entropy(log_sigma)
+        elbo += q_entropy(log_sigma, 1E0)
+        #        print ('2',elbo)
+        #        quit()
+        # Minimize the negative elbo        
+        return -elbo# / K
+
+    gradient = grad(variational_objective)
+    #    gradient = grad(variational_objective_round)
+    elbos = []
+
+    ### Plotting
+    if DO_PLOT:
+        fig = plt.figure(figsize=(8, 4), facecolor='white')
+        ax1 = fig.add_subplot(121, frameon=True)
+        ax2 = fig.add_subplot(122, frameon=True)
+        plt.ion()
+        plt.show(block=False)
+
+    def plot_permutation(ax1, ax2, P):
+        ax1.imshow(P_true, interpolation="none", vmin=0, vmax=1)
+        ax1.set_title("True $\Pi$")
+        ax2.imshow(P, interpolation="none", vmin=0, vmax=1)
+        ax2.set_title("Inferred $g(\mu)$")
+
+
+    def callback(params, t, g):
+        elbos.append(-variational_objective(params, t))
+        print("Iteration {} lower bound {}".format(t, elbos[-1]))
+
+        mu, log_sigma, sigma = unpack_params(params)
+        print("mu min: ", mu.min(), "\t mu max: ", mu.max(), "\t mu mean: ", mu.mean())
+        print("sigma min: ", sigma.min(), "\t sigma max: ", sigma.max(), "\t sigma mean: ", sigma.mean())
+
+        if DO_PLOT:
+            plt.cla()
+            Psi = mu + sigma * npr.randn(K - 1, K - 1)
+            P = psi_to_birkhoff(logistic(Psi))
+            plot_permutation(ax1, ax2, P)
+            plt.draw()
+            plt.pause(1.0 / 30.0)
+
+        if ctrlc_pressed[0]:
+            sys.exit()
+
+    # Check for quit
+    ctrlc_pressed = [False]
+    def ctrlc_handler(signal, frame):
+        print("Halting due to Ctrl-C")
+        ctrlc_pressed[0] = True
+    signal.signal(signal.SIGINT, ctrlc_handler)
+
+    print("Variational inference for matching...")
+    #    init_mean = birkhoff_to_psi(1. / K * np.ones((K - 1, K - 1))).ravel()
+    init_mean = birkhoff_to_psi(1. / K * np.ones((K, K))).ravel()
+    init_mean = logit(init_mean)
+    #FIXME: magic number
+    init_logit_std = -3 * np.ones((K - 1) ** 2)
+    init_var_params = np.concatenate([init_mean, init_logit_std])
+    num_iters = 2
+    variational_params = adam(gradient, init_var_params, step_size=1E-1, num_iters=num_iters, callback=callback)
+#    t_vi = time.time()-t_mcmc-t_start
+#    print ('after VI', t_vi)
+    # fig.savefig("permutation_K20.png")
+    # Plot the elbo
+    plt.figure(figsize=(6,4))
+    plt.plot(elbos)
+    plt.xlim(0, num_iters)
+    plt.xlabel("Iteration")
+    plt.ylabel("ELBO")
+    plt.tight_layout()
+    plt.savefig("permutation_K20_elbo.png")
+    
+    # Sample from the posterior and show samples
+    mu_post, log_sigma_post, sigma_post = unpack_params(variational_params)
+
+    fig, ax = plt.subplots()
+    ax.imshow(P_true, interpolation="none", vmin=0, vmax=1)
+    ax.set_title("True $\Pi$")
+
+    S_samples, kt_samples = [], []
+    freq_vi = np.zeros(len(seq_true[0]))
+    fig = plt.figure(figsize=(10, 10), facecolor='white')
+    for i in range(4):
+        for j in range(4):
+            Psi_sample = mu_post + npr.randn(K - 1, K - 1) * sigma_post
+            #PW
+            P_sample = psi_to_birkhoff(np.array([logistic(Psi_sample)]))[0]
+            #            P_sample = psi_to_birkhoff(logistic(Psi_sample), -1)
+
+            for k in range(len(seq_true[0])):
+                freq_vi[k] += P_sample[k, int(seq_true[0,k])]
+                
+            ax = fig.add_subplot(4, 4, i*4 + j +1, frameon=True)
+            ax.imshow(P_sample, interpolation="none", vmin=0, vmax=1)
+            ax.set_title("Inferred $g(\mu)$")
+            
+            # Round doubly stochastic matrix P to the nearest permutation matrix
+            row, col = linear_sum_assignment(-P_sample.T)
+
+            P_sample = round_to_perm(P_sample)            
+            S_samples.append(np.dot(P_sample, np.arange(P_sample.shape[0])))
+            print (np.dot(P_sample, np.arange(P_sample.shape[0])), np.dot(P_true, np.arange(P_true.shape[0])))
+            print (sp.stats.kendalltau(np.dot(P_sample, np.arange(P_sample.shape[0])), np.dot(P_true, np.arange(P_true.shape[0]))))
+            kt_samples.append(sp.stats.kendalltau(np.dot(P_sample, np.arange(P_sample.shape[0])), np.dot(P_true, np.arange(P_true.shape[0])))[0])
+
+            """
+            ax = fig.add_subplot(4, 4, i*4 + j +1, frameon=True)
+            for k in range(K):
+                plt.plot(xs[k, 0], xs[k, 1], 'sk', markersize=8)
+                plt.plot(mus[k, 0], mus[k, 1], 'ok', markersize=8)
+
+            for k in range(K):
+                plt.plot(mus[k, 0], mus[k, 1], 'o',
+                         color=colors[k % len(colors)],  markersize=6)
+                plt.plot(xs[col[k], 0], xs[col[k], 1], 's',
+                         markersize=6, color=colors[k % len(colors)])
+            
+            # Scale bar
+            plt.plot([-5,-5+2*eta], [5,5], '-k', lw=3)
+
+            ax.set_xlim([-5.5, 5.5])
+            ax.set_ylim([-5.5, 5.5])
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_title("Sample {}".format(i*4+j+1))
+            """
+    print (np.mean(kt_samples))
+    S_unique, counts = np.unique(S_samples, axis=0, return_counts=True)
+    S_mode = S_unique[np.argmax(counts)]
+    kt_vi = sp.stats.kendalltau(S_mode, np.dot(P_true, np.arange(P_true.shape[0])))
+    print (S_mode, kt_vi)
+    freq_vi /= 16
+    print (freq_vi)
+    probright_vi, count = 0, 0
+    for i in range(len(seq_true[0])):
+        if seq_true[0][i] != S_mode[i]:
+            probright_vi += freq_vi[i]
+            count += 1
+    if count != 0:
+        probright_vi /= count
+    print (probright_vi)
+            
+    data_out = np.array([t_mcmc, kt_mcmc[0], probright_mcmc, t_vi, kt_vi[0], probright_vi])
+    np.savetxt('sim'+str(seed)+'.csv', data_out, delimiter=',')
+    quit()
+    plt.tight_layout()
+    plt.savefig("permutation_K20_xy.png")
+    plt.show()
+
+from pybasicbayes.util.text import progprint_xrange
+
+"""
     ### greedy routine - for reference to VI
     def greedy_ascent(prob_mat, n_iter=1000, n_init=10):
         n_biomarkers = prob_mat.shape[1]
@@ -225,174 +467,50 @@ if __name__ == "__main__":
     print (current_order, current_like)
     print (log_likelihood_ebm_S(seq_true[0].astype(int)))
     plt.show()
-    """
+"""
+
+"""
+### rounding method; incomplete (needs likelihood that accepts real-valued P matrix)
+    def sinkhorn_logspace(logP, niters=10):
+        for _ in range(niters):
+            # Normalize columns and take the log again
+            logP = logP - logsumexp(logP, axis=0, keepdims=True)
+            # Normalize rows and take the log again
+            logP = logP - logsumexp(logP, axis=1, keepdims=True)
+        return logP
     
-    # Build variational objective.
-    # Variational dist is a diagonal Gaussian over the (K-1)**2 parameters
-    def unpack_params(params):
-        assert params.shape == (2 * (K - 1)**2, )
-        mu = np.reshape((params[:(K-1)**2]), (K-1, K-1))
-        logit_sigma = np.reshape((params[(K-1)**2:]), (K-1, K-1))
-        sigma = sigma_min + (sigma_max - sigma_min) * logistic(logit_sigma)
-        log_sigma = np.log(sigma)
-        return mu, log_sigma, sigma
+    def variational_objective_round(params, t):
+        def sample_q(params, num_sinkhorn, temp=0.1):
+            # Sample Ps: run sinkhorn to move mu close to Birkhoff
+            #            log_mu_P, log_sigmasq_P = params
+            log_mu_P, log_sigmasq_P, sigma = unpack_params(params)
+            # Unpack the mean, run sinkhorn, the pack it again
+            log_mu_P = sinkhorn_logspace(log_mu_P, num_sinkhorn)
+            P = np.exp(log_mu_P) + \
+                np.sqrt(np.exp(log_sigmasq_P)) * \
+                npr.randn(*log_mu_P.shape)
+            # Round to nearest permutation
+            Phat = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
+            #        print (Phat)
+            P = P * temp + (1 - temp) * Phat
+            #        print (P)
+        #        log_mu_P, log_sigmasq_P = params
+        mu, log_sigmasq_P, sigma = unpack_params(params)
+        L = 0
+        num_sinkhorn = 10
+        for smpl in range(num_mcmc_samples):
+            P = sample_q(params, num_sinkhorn)
+            # Compute the ELBO
+            #        L += log_likelihood(Ys, A, W, Ps, etasq) / num_mcmc_samples
+            #        L += log_likelihood_ebm(P, t) / num_mcmc_samples
+            L += log_likelihood_ebm(P, t) / num_mcmc_samples
+        #FIXME
+        #        L += unconstrained_log_prior(P, log_sigmasq_P) / num_mcmc_samples
+        # Add the entropy terms
+        L += q_entropy(log_sigmasq_P, temp)
+        # Normalize objective
+        L /= (M * N)
+        return L
+"""
 
-    # Set up the log probability objective
-    # Assume a uniform prior on P?
-    # Right now this is just the likelihood...
-    def log_prob(P, t):
-        # np.dot(P, mus) is similar to S_int = np.dot(P2, np.arange(n_features)).astype(int), i.e., it makes the likelihood dependent on P
-        # BUT not the same as have rounded the matrix from doubly stochastic to permutation; does this change the inference?
-        # xs, mus, eta, are equivalent to prob_mat, i.e., they are the data generated from the true permutation / sequence
-        # BUT not the same as have used different distributions to generate data, as opposed to directly from doubly stochastic matrix parameters
-        return np.sum(gaussian_logp(xs, np.dot(P, mus), eta))
-
-    def variational_objective(params, t):
-        """Provides a stochastic estimate of the variational lower bound."""
-        mu, log_sigma, sigma = unpack_params(params)
-        """
-        fig, ax = plt.subplots()
-        try:
-            ax.hist(npr.normal(mu[0,0]._value, sigma[0,0]._value, 100))
-        except AttributeError:
-            ax.hist(npr.normal(mu[0,0], sigma[0,0], 100))
-        plt.show()
-        """
-        Psi_samples = mu + npr.randn(num_mcmc_samples, K-1, K-1) * sigma
-        P_samples = [psi_to_birkhoff(logistic(Psi)) for Psi in Psi_samples]
-
-        # Compute ELBO. Explicitly compute gaussian entropy.
-        elbo = 0
-        for P in P_samples:
-            if is_ebm:
-                elbo += log_likelihood_ebm(P, t) / num_mcmc_samples
-            else:
-                elbo += log_prob(P, t) / num_mcmc_samples
-            #            print ('0',elbo)
-            elbo -= log_det_jacobian(P) / num_mcmc_samples
-            #            elbo += unconstrained_log_prior(P, 0.01) / num_mcmc_samples
-        #            print ('1',elbo)
-        #FIXME: understand difference between these two entropy terms
-        #FIXME: understand why entropy term produces larger mean inferred sigma and hence makes inference more variable
-        #        elbo += gaussian_entropy(log_sigma)
-        #        elbo += q_entropy(log_sigma, 1E0)
-        #        print ('2',elbo)
-        #        quit()
-        # Minimize the negative elbo
-        return -elbo# / K
-
-    gradient = grad(variational_objective)
-    elbos = []
-
-    ### Plotting
-    if DO_PLOT:
-        fig = plt.figure(figsize=(8, 4), facecolor='white')
-        ax1 = fig.add_subplot(121, frameon=True)
-        ax2 = fig.add_subplot(122, frameon=True)
-        plt.ion()
-        plt.show(block=False)
-
-    def plot_permutation(ax1, ax2, P):
-        ax1.imshow(P_true, interpolation="none", vmin=0, vmax=1)
-        ax1.set_title("True $\Pi$")
-        ax2.imshow(P, interpolation="none", vmin=0, vmax=1)
-        ax2.set_title("Inferred $g(\mu)$")
-
-
-    def callback(params, t, g):
-        elbos.append(-variational_objective(params, t))
-        print("Iteration {} lower bound {}".format(t, elbos[-1]))
-
-        mu, log_sigma, sigma = unpack_params(params)
-        print("mu min: ", mu.min(), "\t mu max: ", mu.max(), "\t mu mean: ", mu.mean())
-        print("sigma min: ", sigma.min(), "\t sigma max: ", sigma.max(), "\t sigma mean: ", sigma.mean())
-
-        if DO_PLOT:
-            plt.cla()
-            Psi = mu + sigma * npr.randn(K - 1, K - 1)
-            P = psi_to_birkhoff(logistic(Psi))
-            plot_permutation(ax1, ax2, P)
-            plt.draw()
-            plt.pause(1.0 / 30.0)
-
-        if ctrlc_pressed[0]:
-            sys.exit()
-
-    # Check for quit
-    ctrlc_pressed = [False]
-    def ctrlc_handler(signal, frame):
-        print("Halting due to Ctrl-C")
-        ctrlc_pressed[0] = True
-    signal.signal(signal.SIGINT, ctrlc_handler)
-
-    print("Variational inference for matching...")
-    #    init_mean = birkhoff_to_psi(1. / K * np.ones((K - 1, K - 1))).ravel()
-    init_mean = birkhoff_to_psi(1. / K * np.ones((K, K))).ravel()
-    init_mean = logit(init_mean)
-    #FIXME: magic number
-    init_logit_std = -3 * np.ones((K - 1) ** 2)
-    init_var_params = np.concatenate([init_mean, init_logit_std])
-    num_iters = 100
-    variational_params = adam(gradient, init_var_params, step_size=1E-1, num_iters=num_iters, callback=callback)
-    # fig.savefig("permutation_K20.png")
-
-    # Plot the elbo
-    plt.figure(figsize=(6,4))
-    plt.plot(elbos)
-    plt.xlim(0, num_iters)
-    plt.xlabel("Iteration")
-    plt.ylabel("ELBO")
-    plt.tight_layout()
-    plt.savefig("permutation_K20_elbo.png")
     
-    # Sample from the posterior and show samples
-    mu_post, log_sigma_post, sigma_post = unpack_params(variational_params)
-
-    fig, ax = plt.subplots()
-    ax.imshow(P_true, interpolation="none", vmin=0, vmax=1)
-    ax.set_title("True $\Pi$")
-    
-    fig = plt.figure(figsize=(10, 10), facecolor='white')
-    for i in range(4):
-        for j in range(4):
-            Psi_sample = mu_post + npr.randn(K - 1, K - 1) * sigma_post
-            P_sample = psi_to_birkhoff(logistic(Psi_sample))
-
-            ax = fig.add_subplot(4, 4, i*4 + j +1, frameon=True)
-            ax.imshow(P_sample, interpolation="none", vmin=0, vmax=1)
-            ax.set_title("Inferred $g(\mu)$")
-            
-            # Round doubly stochastic matrix P to the nearest permutation matrix
-            row, col = linear_sum_assignment(-P_sample.T)
-
-            P_sample = round_to_perm(P_sample)
-            print (np.dot(P_sample, np.arange(P_sample.shape[0])), np.dot(P_true, np.arange(P_true.shape[0])))
-            print (sp.stats.kendalltau(np.dot(P_sample, np.arange(P_sample.shape[0])), np.dot(P_true, np.arange(P_true.shape[0]))))
-
-            """
-            ax = fig.add_subplot(4, 4, i*4 + j +1, frameon=True)
-            for k in range(K):
-                plt.plot(xs[k, 0], xs[k, 1], 'sk', markersize=8)
-                plt.plot(mus[k, 0], mus[k, 1], 'ok', markersize=8)
-
-            for k in range(K):
-                plt.plot(mus[k, 0], mus[k, 1], 'o',
-                         color=colors[k % len(colors)],  markersize=6)
-                plt.plot(xs[col[k], 0], xs[col[k], 1], 's',
-                         markersize=6, color=colors[k % len(colors)])
-            
-            # Scale bar
-            plt.plot([-5,-5+2*eta], [5,5], '-k', lw=3)
-
-            ax.set_xlim([-5.5, 5.5])
-            ax.set_ylim([-5.5, 5.5])
-            ax.set_xticks([])
-            ax.set_yticks([])
-            ax.set_title("Sample {}".format(i*4+j+1))
-            """
-            
-    plt.tight_layout()
-    plt.savefig("permutation_K20_xy.png")
-    plt.show()
-
-from pybasicbayes.util.text import progprint_xrange
