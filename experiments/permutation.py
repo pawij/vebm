@@ -1,6 +1,7 @@
 import sys
 import signal
 import warnings
+import time
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -31,14 +32,15 @@ from autograd.scipy.special import logsumexp
 from autograd import grad
 from autograd.misc.optimizers import adam
 
+#sys.path.insert(0, '/home/paww20/code/birkhoff/')
+#sys.path.insert(1, '/home/paww20/code/kde_ebm/')
+sys.path.insert(0, '/home/paww20/.local/lib/python3.8/site-packages/birkhoff/')
+sys.path.insert(0, '/home/paww20/.local/lib/python3.8/site-packages/kde_ebm/')
 from birkhoff.primitives import \
     logit, logistic, gaussian_logp, gaussian_entropy, \
     psi_to_birkhoff, log_det_jacobian, birkhoff_to_psi
 
 import scipy as sp
-import time
-from functools import partial
-import pathos
 
 try:
     seed = int(sys.argv[1])
@@ -47,6 +49,8 @@ except IndexError:
 npr.seed(seed)
 
 DO_PLOT = False
+
+#PW
 
 import numpy
 from sim_funcs import gen_data
@@ -69,13 +73,13 @@ from kde_ebm import plotting, mcmc
 fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
 #plt.show()
 #seq_greedy_ml = mcmc.greedy_ascent_creation(prob_mat)[0][-1]
-"""
+
 t_start = time.time()
 res = mcmc.mcmc(X, mixtures, n_iter=100000,
                 greedy_n_iter=1000, greedy_n_init=10)
 t_mcmc = time.time()-t_start
 print ('after MCMC',t_mcmc)
-fig, ax = plotting.mcmc_uncert_mat(res, score_names=np.arange(X0.shape[1]).astype(str), title='')
+fig, ax = plotting.mcmc_uncert_mat(res, score_names=np.arange(X0.shape[1]).astype(str))#, title='')
 res.sort(reverse=True)
 
 freq_mcmc = np.zeros(len(seq_true[0]))
@@ -98,7 +102,7 @@ ebm_order = res[0]
 print (ebm_order)
 kt_mcmc = sp.stats.kendalltau(ebm_order.ordering, seq_true)
 print (kt_mcmc)
-"""
+
 def unconstrained_log_prior(P, sigmasq_P):
     """
     Consider a product (coordinate-wise) of mixtures of
@@ -130,7 +134,7 @@ def round_to_perm(P):
     P[np.arange(N), col] = 1.0
     return P
 
-import torch
+#import torch
 def linear_sum_assignment_wrapper(P):
     def hungarian(x):
         if x.ndim == 2:
@@ -182,8 +186,7 @@ if __name__ == "__main__":
     D = 2
     eta = 0.2#0.01
     mus = 2 * npr.randn(K, D)
-    num_mcmc_samples = 4
-    # FIXME: magic numbers. Do they matter? _max = 50. doesn't seem to make a difference
+    num_mcmc_samples = 10
     sigma_min, sigma_max = 1e-3, 5.0
 
     # Sample a true permutation (in=col, out=row)
@@ -196,6 +199,62 @@ if __name__ == "__main__":
     # Sample data according to this permutation
     mus_perm = P_true.dot(mus)
     xs = mus_perm + eta * npr.randn(K, D)
+
+    """
+    ### greedy routine - for reference to VI
+    def greedy_ascent(prob_mat, n_iter=1000, n_init=10):
+        n_biomarkers = prob_mat.shape[1]
+        starts_dict = dict((x, []) for x in range(n_init))
+        mu_start = -2. # magic number
+        sigma_start = 5. # magic number
+        for start_idx in range(n_init):
+            current_mu = mu_start + npr.randn(1, n_biomarkers-1, n_biomarkers-1)[0]
+            current_sigma = logistic(sigma_start * npr.randn(1, n_biomarkers-1, n_biomarkers-1)[0])
+            Psi = current_mu + current_sigma * npr.randn(1, n_biomarkers-1, n_biomarkers-1)
+            P = psi_to_birkhoff(logistic(Psi[0]))
+            current_order = np.dot(round_to_perm(P), np.arange(n_biomarkers))
+            current_score = log_likelihood_ebm_S(current_order.astype(int))
+            starts_dict[start_idx].append([current_order, current_score])
+            for iter_n in range(1, n_iter):
+                new_mu = (current_mu + npr.randn(1, n_biomarkers-1, n_biomarkers-1))[0]
+                new_sigma = logistic(current_sigma * npr.randn(1, n_biomarkers-1, n_biomarkers-1)[0])
+                Psi = new_mu + new_sigma * npr.randn(1, n_biomarkers-1, n_biomarkers-1)
+                P = psi_to_birkhoff(logistic(Psi[0]))
+                new_order = np.dot(round_to_perm(P), np.arange(n_biomarkers))
+                new_score = log_likelihood_ebm_S(new_order.astype(int))
+                if new_score > current_score:
+                    #                    print (current_order, new_order)
+                    #                    print (np.min(new_mu), np.max(new_mu), np.mean(new_mu))
+                    #                    print (np.min(new_sigma), np.max(new_sigma), np.mean(new_sigma))
+                    current_order = new_order
+                    current_score = new_score
+                    current_mu = new_mu
+                    current_sigma = new_sigma
+                starts_dict[start_idx].append([current_order, current_score])
+        return starts_dict
+
+    n_init = 10
+    greedy_dict = greedy_ascent(prob_mat, n_iter=10000, n_init=n_init)
+    current_order = greedy_dict[0][-1][0]
+    current_like = greedy_dict[0][-1][1]
+    fig, ax = plt.subplots()
+    for key, value in greedy_dict.items():
+        scores = [x[1] for x in value]
+        iter_n = np.arange(len(scores))+1
+        ax.plot(iter_n, scores, label='Init {}'.format(key+1))
+    ax.legend(loc=0)
+    fig.suptitle('Greedy Ascent Traces')
+    
+    for i in range(1, n_init):
+        new_order = greedy_dict[i][-1][0]
+        new_like = greedy_dict[i][-1][1]
+        if new_like > current_like:
+            current_order = new_order
+            current_like = new_like
+    print (current_order, current_like)
+    print (log_likelihood_ebm_S(seq_true[0].astype(int)))
+    plt.show()
+    """
     
     # Build variational objective.
     # Variational dist is a diagonal Gaussian over the (K-1)**2 parameters
@@ -230,24 +289,7 @@ if __name__ == "__main__":
         """
         Psi_samples = mu + npr.randn(num_mcmc_samples, K-1, K-1) * sigma
         P_samples = [psi_to_birkhoff(logistic(Psi)) for Psi in Psi_samples]
-        """
-        Psi_samples = mu + npr.randn(num_mcmc_samples, K-1, K-1) * sigma
-        Psi_samples = [logistic(Psi) for Psi in Psi_samples]
-        #PW
-        #        P_samples = [psi_to_birkhoff(logistic(Psi)) for Psi in Psi_samples]
-        #        P_samples = [psi_to_birkhoff(logistic(Psi), -1) for Psi in Psi_samples]
-        import multiprocessing_on_dill as mp
-        pool = mp.Pool()
-        pool.ncpus = 4
-        Psi_samples = mu + npr.randn(num_mcmc_samples, K-1, K-1) * sigma
-        Psi_samples = [logistic(Psi) for Psi in Psi_samples]
-        copier = partial(psi_to_birkhoff,
-                         Psi_samples)
-        # will return shape (n_start, 1)
-        P_samples = np.array(pool.map(copier, range(4)))        
-        #        print ('P_samples',P_samples)        
-        #        quit()
-        """
+
         # Compute ELBO. Explicitly compute gaussian entropy.
         elbo = 0
         for P in P_samples:
@@ -262,14 +304,13 @@ if __name__ == "__main__":
         #FIXME: understand difference between these two entropy terms
         #FIXME: understand why entropy term produces larger mean inferred sigma and hence makes inference more variable
         #        elbo += gaussian_entropy(log_sigma)
-        elbo += q_entropy(log_sigma, 1E0)
+        #        elbo += q_entropy(log_sigma, 1E0)
         #        print ('2',elbo)
         #        quit()
-        # Minimize the negative elbo        
+        # Minimize the negative elbo
         return -elbo# / K
 
     gradient = grad(variational_objective)
-    #    gradient = grad(variational_objective_round)
     elbos = []
 
     ### Plotting
@@ -320,11 +361,12 @@ if __name__ == "__main__":
     #FIXME: magic number
     init_logit_std = -3 * np.ones((K - 1) ** 2)
     init_var_params = np.concatenate([init_mean, init_logit_std])
-    num_iters = 2
+    num_iters = 100
     variational_params = adam(gradient, init_var_params, step_size=1E-1, num_iters=num_iters, callback=callback)
-#    t_vi = time.time()-t_mcmc-t_start
-#    print ('after VI', t_vi)
+    t_vi = time.time()-t_mcmc-t_start
+    print ('after VI', t_vi)
     # fig.savefig("permutation_K20.png")
+
     # Plot the elbo
     plt.figure(figsize=(6,4))
     plt.plot(elbos)
@@ -347,9 +389,7 @@ if __name__ == "__main__":
     for i in range(4):
         for j in range(4):
             Psi_sample = mu_post + npr.randn(K - 1, K - 1) * sigma_post
-            #PW
-            P_sample = psi_to_birkhoff(np.array([logistic(Psi_sample)]))[0]
-            #            P_sample = psi_to_birkhoff(logistic(Psi_sample), -1)
+            P_sample = psi_to_birkhoff(logistic(Psi_sample))
 
             for k in range(len(seq_true[0])):
                 freq_vi[k] += P_sample[k, int(seq_true[0,k])]
@@ -410,107 +450,3 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig("permutation_K20_xy.png")
     plt.show()
-
-from pybasicbayes.util.text import progprint_xrange
-
-"""
-    ### greedy routine - for reference to VI
-    def greedy_ascent(prob_mat, n_iter=1000, n_init=10):
-        n_biomarkers = prob_mat.shape[1]
-        starts_dict = dict((x, []) for x in range(n_init))
-        mu_start = -2. # magic number
-        sigma_start = 5. # magic number
-        for start_idx in range(n_init):
-            current_mu = mu_start + npr.randn(1, n_biomarkers-1, n_biomarkers-1)[0]
-            current_sigma = logistic(sigma_start * npr.randn(1, n_biomarkers-1, n_biomarkers-1)[0])
-            Psi = current_mu + current_sigma * npr.randn(1, n_biomarkers-1, n_biomarkers-1)
-            P = psi_to_birkhoff(logistic(Psi[0]))
-            current_order = np.dot(round_to_perm(P), np.arange(n_biomarkers))
-            current_score = log_likelihood_ebm_S(current_order.astype(int))
-            starts_dict[start_idx].append([current_order, current_score])
-            for iter_n in range(1, n_iter):
-                new_mu = (current_mu + npr.randn(1, n_biomarkers-1, n_biomarkers-1))[0]
-                new_sigma = logistic(current_sigma * npr.randn(1, n_biomarkers-1, n_biomarkers-1)[0])
-                Psi = new_mu + new_sigma * npr.randn(1, n_biomarkers-1, n_biomarkers-1)
-                P = psi_to_birkhoff(logistic(Psi[0]))
-                new_order = np.dot(round_to_perm(P), np.arange(n_biomarkers))
-                new_score = log_likelihood_ebm_S(new_order.astype(int))
-                if new_score > current_score:
-                    #                    print (current_order, new_order)
-                    #                    print (np.min(new_mu), np.max(new_mu), np.mean(new_mu))
-                    #                    print (np.min(new_sigma), np.max(new_sigma), np.mean(new_sigma))
-                    current_order = new_order
-                    current_score = new_score
-                    current_mu = new_mu
-                    current_sigma = new_sigma
-                starts_dict[start_idx].append([current_order, current_score])
-        return starts_dict
-
-    n_init = 10
-    greedy_dict = greedy_ascent(prob_mat, n_iter=10000, n_init=n_init)
-    current_order = greedy_dict[0][-1][0]
-    current_like = greedy_dict[0][-1][1]
-    fig, ax = plt.subplots()
-    for key, value in greedy_dict.items():
-        scores = [x[1] for x in value]
-        iter_n = np.arange(len(scores))+1
-        ax.plot(iter_n, scores, label='Init {}'.format(key+1))
-    ax.legend(loc=0)
-    fig.suptitle('Greedy Ascent Traces')
-    
-    for i in range(1, n_init):
-        new_order = greedy_dict[i][-1][0]
-        new_like = greedy_dict[i][-1][1]
-        if new_like > current_like:
-            current_order = new_order
-            current_like = new_like
-    print (current_order, current_like)
-    print (log_likelihood_ebm_S(seq_true[0].astype(int)))
-    plt.show()
-"""
-
-"""
-### rounding method; incomplete (needs likelihood that accepts real-valued P matrix)
-    def sinkhorn_logspace(logP, niters=10):
-        for _ in range(niters):
-            # Normalize columns and take the log again
-            logP = logP - logsumexp(logP, axis=0, keepdims=True)
-            # Normalize rows and take the log again
-            logP = logP - logsumexp(logP, axis=1, keepdims=True)
-        return logP
-    
-    def variational_objective_round(params, t):
-        def sample_q(params, num_sinkhorn, temp=0.1):
-            # Sample Ps: run sinkhorn to move mu close to Birkhoff
-            #            log_mu_P, log_sigmasq_P = params
-            log_mu_P, log_sigmasq_P, sigma = unpack_params(params)
-            # Unpack the mean, run sinkhorn, the pack it again
-            log_mu_P = sinkhorn_logspace(log_mu_P, num_sinkhorn)
-            P = np.exp(log_mu_P) + \
-                np.sqrt(np.exp(log_sigmasq_P)) * \
-                npr.randn(*log_mu_P.shape)
-            # Round to nearest permutation
-            Phat = round_to_perm(P if isinstance(P, np.ndarray) else P._value)
-            #        print (Phat)
-            P = P * temp + (1 - temp) * Phat
-            #        print (P)
-        #        log_mu_P, log_sigmasq_P = params
-        mu, log_sigmasq_P, sigma = unpack_params(params)
-        L = 0
-        num_sinkhorn = 10
-        for smpl in range(num_mcmc_samples):
-            P = sample_q(params, num_sinkhorn)
-            # Compute the ELBO
-            #        L += log_likelihood(Ys, A, W, Ps, etasq) / num_mcmc_samples
-            #        L += log_likelihood_ebm(P, t) / num_mcmc_samples
-            L += log_likelihood_ebm(P, t) / num_mcmc_samples
-        #FIXME
-        #        L += unconstrained_log_prior(P, log_sigmasq_P) / num_mcmc_samples
-        # Add the entropy terms
-        L += q_entropy(log_sigmasq_P, temp)
-        # Normalize objective
-        L /= (M * N)
-        return L
-"""
-
-    
