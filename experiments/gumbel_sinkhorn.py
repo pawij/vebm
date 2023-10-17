@@ -32,7 +32,7 @@ import autograd.numpy as np
 import autograd.numpy.random as npr
 from autograd.scipy.special import logsumexp, gammaln
 from autograd import grad
-from autograd.misc.optimizers import adam
+from autograd.misc.optimizers import adam, sgd
 
 from birkhoff.primitives import \
     logit, logistic, gaussian_logp, gaussian_entropy, \
@@ -105,10 +105,10 @@ def log_likelihood_ebm_S(S_int):
 if __name__ == "__main__":
 
     do_mcmc = 0
-    do_plot = 0
+    do_plot = 1
 
-    n_ppl = 100
-    n_bms = 10
+    n_ppl = 2000
+    n_bms = 400
     n_obs = 1
     # FIXME: systematically test dependency on these hyperparameters
     num_iters = 100
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     num_sinkhorn = 10
     temperature = 1.#10.
     temperature_prior = 1.#1.
-    gumbel_noise = .0#0.01
+    gumbel_noise = 0.#0.01
     sigma_start = -2.
     sigmasq_prior = 1.
     if gumbel_noise > 0:
@@ -193,7 +193,11 @@ if __name__ == "__main__":
             fig, ax = plotting.mcmc_uncert_mat(mcmc_samples, score_names=np.arange(X0.shape[1]).astype(str))#, title='')
             plt.show()
         mcmc_samples.sort(reverse=True)
-    
+        ebm_order = mcmc_samples[0]
+        kt_mcmc = sp.stats.kendalltau(ebm_order.ordering, seq_true[0])
+        print ('S_mcmc, kt_mcmc',ebm_order,kt_mcmc)
+        print ('frac_correct', np.sum(ebm_order.ordering==seq_true[0])/n_bms, ' chance ', 1/n_bms)
+        quit()
         freq_mcmc = np.zeros(len(seq_true[0]))
         for i in range(len(mcmc_samples)):
             for j in range(len(seq_true[0])):
@@ -208,14 +212,7 @@ if __name__ == "__main__":
                 count += 1
         if count != 0:
             probright_mcmc /= count
-        #        print (probright_mcmc)
-    
-        ebm_order = mcmc_samples[0]
-        #        print (ebm_order)
-        kt_mcmc = sp.stats.kendalltau(ebm_order.ordering, seq_true)
-        print ('S_mcmc, kt_mcmc',ebm_order,kt_mcmc)
-        print ('frac_correct', np.sum(ebm_order.ordering==seq_true)/n_bms, ' chance ', 1/n_bms)
-        quit()
+        #        print (probright_mcmc)    
         #    plt.show()
 
     # Build variational objective.
@@ -338,7 +335,9 @@ if __name__ == "__main__":
 
     print("Variational inference for matching...")
     t_start = time.time()
+    # FIXME: why does adam work so much better than sgd?
     variational_params = adam(gradient, init_var_params, step_size=step_size, num_iters=num_iters, callback=callback)
+    #    variational_params = sgd(gradient, init_var_params, step_size=step_size, num_iters=num_iters, callback=callback)
     t_vi = time.time()-t_start
     print ('after VI', t_vi)
     # fig.savefig("permutation_K20.png")
@@ -412,16 +411,19 @@ if __name__ == "__main__":
         ax.imshow(P_true, interpolation="none", vmin=0, vmax=1)
         ax.set_title("True permutation")
 
-    S_samples, kt_samples, num_corrects = [], [], []
+    P_samples, S_samples, kt_samples, num_corrects = [], [], [], []
     freq_vi = np.zeros(len(seq_true[0]))
+    #    gumbel_noise = 1.
+    print ('Sampling posterior with gumbel noise', gumbel_noise)
     if do_plot:
-        fig = plt.figure(figsize=(10, 10), facecolor='white')        
+        fig = plt.figure(figsize=(10, 10), facecolor='white')
     for i in range(4):
-        for j in range(3):
+        for j in range(4):
             P_sample = (log_mu_P_post + sample_gumbel(log_mu_P_post.shape, temperature) * gumbel_noise) / temperature
             P_sample = sinkhorn_logspace(P_sample, num_sinkhorn)
             ##Notice how we limit the variance
             P_sample = np.exp(P_sample)
+            P_samples.append(P_sample)
             #            print (np.min(P_sample), np.max(P_sample))
 
             for k in range(len(seq_true[0])):
@@ -436,7 +438,7 @@ if __name__ == "__main__":
             row, col = linear_sum_assignment(-P_sample)
 
             P_sample = round_to_perm(P_sample)
-
+            
             num_correct = n_correct(P_sample, P_true)
             num_corrects.append(num_correct)
             print ('frac_correct', num_correct/n_bms)
@@ -472,9 +474,10 @@ if __name__ == "__main__":
     print ('tot frac_correct',np.mean([x/n_bms for x in num_corrects]), np.std([x/n_bms for x in num_corrects]),' chance ',1/n_bms)
     #    print (np.mean(kt_samples))
     S_unique, counts = np.unique(S_samples, axis=0, return_counts=True)
-    #    print (S_unique, counts)
-    #    S_mode = S_unique[np.argmax(counts)]
+    print (S_unique, counts)
+    S_mode = S_unique[np.argmax(counts)]
     #FIXME
+    """
     S_mode = [0]*n_bms
     for i in range(n_bms):
         pos = [0]*n_bms
@@ -482,19 +485,22 @@ if __name__ == "__main__":
             pos[np.where(S_samples[j]==i)[0][0]] += 1
         S_mode[np.argmax(pos)] = i
     S_mode = np.array(S_mode)
-    
+    """
     confusion_mat = np.zeros((n_bms,n_bms))
     for i in range(n_bms):
         #        confusion_mat[i, :] = np.sum(np.array(S_samples) == S_mode[i], axis=0)
         confusion_mat[i, :] = np.sum(np.array(S_samples) == np.arange(n_bms)[i], axis=0)
-
-    S_mode = np.argmax(confusion_mat, axis=0)
-    kt_vi = sp.stats.kendalltau(S_mode, np.dot(P_true, np.arange(P_true.shape[0])))
+    #    S_mode = np.argmax(confusion_mat, axis=0)
+    
+    kt_vi = sp.stats.kendalltau(S_mode, seq_true[0].astype(int))
     print ('S_true, S_vi, kt_vi', seq_true[0].astype(int), S_mode, kt_vi)
     
     #    if do_plot:
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.imshow(confusion_mat.T, interpolation='nearest', cmap='Greens')
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.imshow(np.sum(P_samples, axis=0), interpolation='nearest', cmap='Greens')
     
     freq_vi /= 16
     #    print (freq_vi)
