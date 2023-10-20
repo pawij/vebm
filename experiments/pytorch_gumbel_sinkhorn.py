@@ -58,29 +58,18 @@ def round_to_perm(P):
 
 # Set up the log probability objective
 # Assume a uniform prior on P?
-"""
-L_yes                   = np.zeros(data.shape)
-L_no                    = np.zeros(data.shape)
-for i in range(N):
-    if sustainType == "mixture_GMM":
-        L_no[:, i], L_yes[:, i] = mixtures[i].pdf(None, data[:, i])
-    elif sustainType   == "mixture_KDE":
-        L_no[:, i], L_yes[:, i] = mixtures[i].pdf(data[:, i].reshape(-1, 1))
-"""
+
 def log_likelihood_ebm(P):
-    """
-    arange_Np1                          = np.arange(0, N+1)
-    p_perm_k                            = np.zeros((M, N+1))
-    #**** THIS VERSION IS ROUGHLY 10x FASTER THAN THE ONE BELOW
-    cp_yes                              = np.cumprod(sustainData.L_yes[:, S_int],        1)
-    cp_no                               = np.cumprod(sustainData.L_no[:,  S_int[::-1]],  1)   #do the cumulative product from the end of the sequence
-    # Even faster version to avoid loops
+    k = prob_mat.shape[1]+1
+    p_perm_k = torch.zeros((prob_mat.shape[0], k))
+    cp_yes = torch.cumprod(torch.mm(prob_mat[:, :, 1], P.T), 1)
+    cp_no = torch.cumprod(torch.mm(prob_mat[:, :, 0], torch.flip(P.T, [1])), 1)
     p_perm_k[:, 0] = cp_no[:, -1]
-    p_perm_k[:, 1:-1] = cp_no[:, :-1][:, ::-1] * cp_yes[:, :-1]
+    p_perm_k[:, 1:-1] = torch.flip(cp_no[:, :-1], [1]) * cp_yes[:, :-1]
     p_perm_k[:, -1] = cp_yes[:, -1]
-    p_perm_k *= 1 / (N + 1)
+    p_perm_k /= k
+    return torch.sum(torch.log(torch.sum(p_perm_k, 1)+1e-250))
     """
-    #    print (P.T)
     p_yes = torch.mm(prob_mat[:, :, 1], P.T)
     p_no = torch.mm(prob_mat[:, :, 0], P.T)
     k = prob_mat.shape[1]+1
@@ -88,9 +77,10 @@ def log_likelihood_ebm(P):
     for i in range(k):
         p_perm[i] = torch.prod(p_yes[:, :i], 1)*torch.prod(p_no[:, i:k-1], 1)
     p_perm = p_perm.T
-    ll = torch.sum(torch.log(torch.sum((1./k)*p_perm, 1)+1e-250))
-    return ll
-
+    #    print (p_perm_k)
+    #    quit()
+    return torch.sum(torch.log(torch.sum((1./k)*p_perm, 1)+1e-250))
+    """
 if __name__ == "__main__":
 
     do_mcmc = 0
@@ -140,6 +130,12 @@ if __name__ == "__main__":
     from kde_ebm.plotting import plotting
     mixtures = fit_all_gmm_models(X0, labels)
     prob_mat = get_prob_mat(X, mixtures)
+
+    L_yes = torch.zeros((n_ppl, n_bms))
+    L_no = torch.zeros((n_ppl, n_bms))
+    for i in range(n_bms):
+        L_no[:, i], L_yes[:, i] = torch.tensor(mixtures[i].pdf(None, X[:, i]))
+    
     if do_plot:    
         fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
     P_true = np.zeros((n_bms, n_bms))
