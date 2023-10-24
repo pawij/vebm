@@ -12,6 +12,8 @@ import autograd.numpy.random as npr
 from autograd.scipy.special import gammaln
 import scipy as sp
 
+torch.set_default_dtype(torch.float64)
+
 is_cuda = torch.cuda.is_available()
 
 def to_var(x):
@@ -56,6 +58,16 @@ def round_to_perm(P):
     P[np.arange(N), col] = 1.0
     return P
 
+def vectorised_round_to_perm(P):
+    N = P.shape[0]
+    P_hard = np.empty(P.shape)
+    for i in range(P.shape[2]):
+        row, col = sp.optimize.linear_sum_assignment(-P[:,:,i])
+        P_i = np.zeros((N, N))
+        P_i[np.arange(N), col] = 1.0
+        P_hard[:,:,i] = P_i
+    return P_hard
+
 # Set up the log probability objective
 # Assume a uniform prior on P?
 
@@ -71,6 +83,7 @@ def log_likelihood_ebm(P):
     p_perm_k /= k
     return torch.sum(torch.log(torch.sum(p_perm_k, 1)+1e-250))
 
+#FIXME: write a logspace version to avoid overflow
 def vectorised_log_likelihood_ebm(P):
     k = prob_mat.shape[1]+1
     P_T = torch.permute(P, (1,0,2))
@@ -82,14 +95,24 @@ def vectorised_log_likelihood_ebm(P):
     p_perm_k[:, -1, :] = cp_yes[:, -1, :]
     p_perm_k /= k
     return torch.sum(torch.sum(torch.log(torch.sum(p_perm_k, axis=1)+1e-250), axis=0))
-
+    """
+    p_yes = torch.einsum('ij,jkl->ikl', prob_mat[:, :, 1], P_T)
+    p_no = torch.einsum('ij,jkl->ikl', prob_mat[:, :, 0], torch.flip(P_T, [1]))
+    cp_yes = torch.cumsum(torch.log(p_yes), axis=1)
+    cp_no = torch.cumsum(torch.log(p_no), axis=1)
+    p_perm_k[:, 0, :] = cp_no[:, -1, :]
+    p_perm_k[:, 1:-1, :] = torch.einsum('ijk,ijk->ijk', torch.flip(cp_no[:, :-1, :], [1]), cp_yes[:, :-1, :])
+    p_perm_k[:, -1, :] = cp_yes[:, -1, :]
+    p_perm_k /= k
+    return torch.sum(torch.sum(torch.log(torch.sum(p_perm_k, axis=1)+1e-250), axis=0))
+    """
 if __name__ == "__main__":
 
     do_mcmc = 0
     do_plot = 0
 
-    n_ppl = 200
-    n_bms = 10
+    n_ppl = 2000
+    n_bms = 400
     n_obs = 1
     # FIXME: systematically test dependency on these hyperparameters
     num_iters = 100
@@ -97,7 +120,7 @@ if __name__ == "__main__":
     num_sinkhorn = 10
     temperature = 1.#10.
     temperature_prior = 1.#1.
-    gumbel_scale = 0.01#0.01
+    gumbel_scale = 0.0#0.01
     sigma_start = -2.
     sigmasq_prior = 1.
     if gumbel_scale > 0:
@@ -195,8 +218,13 @@ if __name__ == "__main__":
         #        print (probright_mcmc)    
         #    plt.show()
 
-    prob_mat = torch.tensor(prob_mat).float()
-        
+    # convert prob_mat to torch
+    prob_mat = torch.tensor(prob_mat)
+    for row in prob_mat:
+        if torch.any(torch.isnan(row)):
+            print ('!')
+            quit()
+    
     # Build variational objective.
     def sinkhorn_logspace(logP, n_iters=10):
         n = logP.size()[1]
@@ -215,10 +243,10 @@ if __name__ == "__main__":
         return logP
 
     def sample_gumbel(a, temperature, n=1, eps=1E-20):
-        return -torch.log(-torch.log(torch.rand((n, a[0], a[1])).float() + eps) + eps)
+        return -torch.log(-torch.log(torch.rand((n, a[0], a[1])) + eps) + eps)
 
     def vectorised_sample_gumbel(a, temperature, n=1, eps=1E-20):
-        return -torch.log(-torch.log(torch.rand((a[0], a[1], n)).float() + eps) + eps)
+        return -torch.log(-torch.log(torch.rand((a[0], a[1], n)) + eps) + eps)
 
     def gumbel_distance(log_mu_P, temperature_prior, temperature):
         #FIXME: check
@@ -231,16 +259,20 @@ if __name__ == "__main__":
     def variational_objective(params, return_dr=False):
         """Provides a stochastic estimate of the variational lower bound."""
         log_mu_P = params[0]
-        distortion, rate = 0., 0.
+        # vectorise \mu for number of MC samples
         log_mu_P_rep = log_mu_P.unsqueeze(2).repeat(1, 1, num_mc_samples)
-        gumbel_noise = vectorised_sample_gumbel(log_mu_P.shape, temperature, num_mc_samples)
-        log_P = (log_mu_P_rep + gumbel_noise * gumbel_scale) / temperature     
+        # sample Gumbel noise
+        gumbel_noise = to_var(vectorised_sample_gumbel(log_mu_P.shape, temperature, num_mc_samples))
+        # add to \mu and scale
+        log_P = (log_mu_P_rep + gumbel_noise * gumbel_scale) / temperature
+        # move \mu closer to Birkhoff polytope
         log_P = vectorised_sinkhorn_logspace(log_P, num_sinkhorn)
+        # note zero variance
         P = torch.exp(log_P)
         # observation likelihood
-        distortion = distortion + vectorised_log_likelihood_ebm(P) / num_mc_samples        
+        distortion = vectorised_log_likelihood_ebm(P) / num_mc_samples
         # KL divergence
-        rate = gumbel_distance(log_mu_P, temperature_prior, temperature)
+        rate = to_var(gumbel_distance(log_mu_P, temperature_prior, temperature))
         # entropy term for \mu?
         if return_dr:
             return -(distortion + rate), distortion, rate
@@ -317,6 +349,7 @@ if __name__ == "__main__":
         #        model.train()
         optimizer.zero_grad()
         loss = variational_objective(params)
+        print (loss)
         loss.backward()
         optimizer.step()
     
@@ -375,7 +408,55 @@ if __name__ == "__main__":
     plt.legend()
     """
     # Sample from the posterior and show samples
-    log_mu_P_post = params[0]
+    log_mu_P = params[0]
+    log_mu_P_rep = log_mu_P.unsqueeze(2).repeat(1, 1, 100)
+    # sample Gumbel noise
+    gumbel_noise = to_var(vectorised_sample_gumbel(log_mu_P.shape, temperature, 100))
+    # add to \mu and scale
+    log_P = (log_mu_P_rep + gumbel_noise * gumbel_scale) / temperature
+    # move \mu closer to Birkhoff polytope
+    log_P = vectorised_sinkhorn_logspace(log_P, num_sinkhorn)
+    # note zero variance
+    P_samples = torch.exp(log_P)
+    P_samples = np.array([x.detach().numpy() for x in P_samples])
+    # round to permutation matrices
+    P_hard_samples = vectorised_round_to_perm(P_samples)
+    # sequences
+    S_samples = np.einsum('ijk,j->ik', P_hard_samples, np.arange(n_bms)).T
+    S_unique, counts = np.unique(S_samples, axis=0, return_counts=True)
+    print (S_unique, counts)
+    S_mode = S_unique[np.argmax(counts)]
+    
+    confusion_mat = np.zeros((n_bms,n_bms))
+    for i in range(n_bms):
+        #        confusion_mat[i, :] = np.sum(S_samples == S_mode[i], axis=0)
+        confusion_mat[i, :] = np.sum(np.array(S_samples) == np.arange(n_bms)[i], axis=0)
+    #    S_mode = np.argmax(confusion_mat, axis=0)
+
+    kt_vi = sp.stats.kendalltau(S_mode, seq_true[0].astype(int))
+    print ('S_true, S_vi, kt_vi', seq_true[0].astype(int), S_mode, kt_vi)
+    
+    #    if do_plot:
+
+    fig, ax = plt.subplots()
+    ax.imshow(P_true, interpolation='none', cmap='Greens')
+    ax.set_ylabel('Position')
+    ax.set_xlabel('Event')
+    ax.set_title('True P')
+        
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.imshow(confusion_mat.T, interpolation='nearest', cmap='Greens')
+    ax.set_ylabel('Position')
+    ax.set_xlabel('Event')
+    ax.set_title('Inferred P_hard')
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.imshow(np.sum(P_samples, axis=2), interpolation='nearest', cmap='Greens')
+    ax.set_ylabel('Position')
+    ax.set_xlabel('Event')
+    ax.set_title('Inferred P_soft')
+            
+    plt.show()
 
     """
     if do_plot:
@@ -388,10 +469,6 @@ if __name__ == "__main__":
             ax.flat[i].hist(np.random.normal(log_mu_P_post.flatten()[i], sigma_post.flatten()[i], 1000))
             ax.flat[i].set_xlim(-10,10)
     """
-    if do_plot:
-        fig, ax = plt.subplots()
-        ax.imshow(P_true, interpolation="none", vmin=0, vmax=1)
-        ax.set_title("True permutation")
 
     P_samples, S_samples, kt_samples, num_corrects = [], [], [], []
     freq_vi = np.zeros(len(seq_true[0]))
