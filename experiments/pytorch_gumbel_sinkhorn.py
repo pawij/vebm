@@ -61,26 +61,28 @@ def round_to_perm(P):
 
 def log_likelihood_ebm(P):
     k = prob_mat.shape[1]+1
+    P_T = torch.permute(P, (1,0))
     p_perm_k = torch.zeros((prob_mat.shape[0], k))
-    cp_yes = torch.cumprod(torch.mm(prob_mat[:, :, 1], P.T), 1)
-    cp_no = torch.cumprod(torch.mm(prob_mat[:, :, 0], torch.flip(P.T, [1])), 1)
+    cp_yes = torch.cumprod(torch.mm(prob_mat[:, :, 1], P_T), 1)
+    cp_no = torch.cumprod(torch.mm(prob_mat[:, :, 0], torch.flip(P_T, [1])), 1)
     p_perm_k[:, 0] = cp_no[:, -1]
     p_perm_k[:, 1:-1] = torch.flip(cp_no[:, :-1], [1]) * cp_yes[:, :-1]
     p_perm_k[:, -1] = cp_yes[:, -1]
     p_perm_k /= k
     return torch.sum(torch.log(torch.sum(p_perm_k, 1)+1e-250))
-    """
-    p_yes = torch.mm(prob_mat[:, :, 1], P.T)
-    p_no = torch.mm(prob_mat[:, :, 0], P.T)
+
+def vectorised_log_likelihood_ebm(P):
     k = prob_mat.shape[1]+1
-    p_perm = torch.zeros((k, prob_mat.shape[0]))
-    for i in range(k):
-        p_perm[i] = torch.prod(p_yes[:, :i], 1)*torch.prod(p_no[:, i:k-1], 1)
-    p_perm = p_perm.T
-    #    print (p_perm_k)
-    #    quit()
-    return torch.sum(torch.log(torch.sum((1./k)*p_perm, 1)+1e-250))
-    """
+    P_T = torch.permute(P, (1,0,2))
+    p_perm_k = torch.zeros((prob_mat.shape[0], k, P.shape[2]))
+    cp_yes = torch.cumprod(torch.einsum('ij,jkl->ikl', prob_mat[:, :, 1], P_T), axis=1)
+    cp_no = torch.cumprod(torch.einsum('ij,jkl->ikl', prob_mat[:, :, 0], torch.flip(P_T, [1])), axis=1)
+    p_perm_k[:, 0, :] = cp_no[:, -1, :]
+    p_perm_k[:, 1:-1, :] = torch.einsum('ijk,ijk->ijk', torch.flip(cp_no[:, :-1, :], [1]), cp_yes[:, :-1, :])
+    p_perm_k[:, -1, :] = cp_yes[:, -1, :]
+    p_perm_k /= k
+    return torch.sum(torch.sum(torch.log(torch.sum(p_perm_k, axis=1)+1e-250), axis=0))
+
 if __name__ == "__main__":
 
     do_mcmc = 0
@@ -95,16 +97,16 @@ if __name__ == "__main__":
     num_sinkhorn = 10
     temperature = 1.#10.
     temperature_prior = 1.#1.
-    gumbel_noise = 0.#0.01
+    gumbel_scale = 0.01#0.01
     sigma_start = -2.
     sigmasq_prior = 1.
-    if gumbel_noise > 0:
+    if gumbel_scale > 0:
         num_mc_samples = 10
     else:
         num_mc_samples = 1
     data_noise = .1
     #    sigma_min, sigma_max = 1E-8, 1.#1E-3, 5.0
-    print ('num_iters, step_size, num_sinkhorn, sigma_start, temperature, temperature_prior, gumbel_noise, num_mc_samples, data_noise', num_iters, step_size, num_sinkhorn, sigma_start, temperature, temperature_prior, gumbel_noise, num_mc_samples, data_noise)
+    print ('num_iters, step_size, num_sinkhorn, sigma_start, temperature, temperature_prior, gumbel_scale, num_mc_samples, data_noise', num_iters, step_size, num_sinkhorn, sigma_start, temperature, temperature_prior, gumbel_scale, num_mc_samples, data_noise)
     
     params = [to_var(torch.zeros((n_bms, n_bms), requires_grad=True))]
     seq_true = np.array([npr.permutation(n_bms)])
@@ -131,11 +133,6 @@ if __name__ == "__main__":
     mixtures = fit_all_gmm_models(X0, labels)
     prob_mat = get_prob_mat(X, mixtures)
 
-    L_yes = torch.zeros((n_ppl, n_bms))
-    L_no = torch.zeros((n_ppl, n_bms))
-    for i in range(n_bms):
-        L_no[:, i], L_yes[:, i] = torch.tensor(mixtures[i].pdf(None, X[:, i]))
-    
     if do_plot:    
         fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
     P_true = np.zeros((n_bms, n_bms))
@@ -208,9 +205,20 @@ if __name__ == "__main__":
             logP = logP - (torch.logsumexp(logP, dim=2, keepdim=True)).view(-1, n, 1)
             logP = logP - (torch.logsumexp(logP, dim=1, keepdim=True)).view(-1, 1, n)
         return logP
-    
+
+    def vectorised_sinkhorn_logspace(logP, n_iters=10):
+        n = logP.size()[1]
+        logP = logP.view(n, n, -1)
+        for i in range(n_iters):
+            logP = logP - (torch.logsumexp(logP, dim=1, keepdim=True)).view(n, 1, -1)
+            logP = logP - (torch.logsumexp(logP, dim=0, keepdim=True)).view(1, n, -1)
+        return logP
+
     def sample_gumbel(a, temperature, n=1, eps=1E-20):
         return -torch.log(-torch.log(torch.rand((n, a[0], a[1])).float() + eps) + eps)
+
+    def vectorised_sample_gumbel(a, temperature, n=1, eps=1E-20):
+        return -torch.log(-torch.log(torch.rand((a[0], a[1], n)).float() + eps) + eps)
 
     def gumbel_distance(log_mu_P, temperature_prior, temperature):
         #FIXME: check
@@ -222,46 +230,17 @@ if __name__ == "__main__":
     
     def variational_objective(params, return_dr=False):
         """Provides a stochastic estimate of the variational lower bound."""
-        #FIXME: move out of function scope
         log_mu_P = params[0]
-        # calculate ELBO
         distortion, rate = 0., 0.
-        for n in range(num_mc_samples):
-            log_P = (log_mu_P + sample_gumbel(log_mu_P.shape, temperature)[0] * gumbel_noise) / temperature
-            log_P = sinkhorn_logspace(log_P, num_sinkhorn)
-            ##Notice how we limit the variance
-            # if we also sampled from variance then 'P' could be real valued, which 'log_likelihood_ebm' does not support
-            P = torch.exp(log_P)
-            # observation
-            distortion = distortion + log_likelihood_ebm(P[0]) / num_mc_samples
-            # prior?
-            #            distortion = distortion + unconstrained_log_prior(P, sigmasq_prior) / num_mc_samples
-        """
-        log_P = (np.repeat(log_mu_P, num_mc_samples) + sample_gumbel(log_mu_P.shape, temperature, num_mc_samples) * gumbel_noise) / temperature
-        def vectorised_gumbel_logspace(log_P, niters):
-            for _ in range(niters):
-                log_P = log_P - logsumexp(log_P.reshape(log_P.shape[0], log_P.shape[1]*log_P.shape[1]), axis=0, keepdims=True)
-                log_P = log_P - logsumexp(log_P.reshape(log_P.shape[0]*log_P.shape[0], log_P.shape[1]), axis=1, keepdims=True)
-            return log_P
-        def vectorised_log_likelihood_ebm(P, t):
-            # check Leon's version
-            p_yes = np.dot(prob_mat[:, :, 1], P.T)
-            p_no = np.dot(prob_mat[:, :, 0], P.T)
-            k = prob_mat.shape[1]+1
-            p_perm = []
-            for i in range(k):
-                p_perm.append(np.prod(p_yes[:, :i], 1)*np.prod(p_no[:, i:k-1], 1))
-            p_perm = np.array(p_perm).T
-            ll = np.sum(np.log(np.sum((1./k)*p_perm, 1)+1e-250))
-            return ll
-        log_P = vectorised_gumbel_logspace(log_P, num_sinkhorn)
-        P = np.exp(log_P)
-        distortion = distortion + vectorised_log_likelihood_ebm(P, t) / num_mc_samples
-        """
+        log_mu_P_rep = log_mu_P.unsqueeze(2).repeat(1, 1, num_mc_samples)
+        gumbel_noise = vectorised_sample_gumbel(log_mu_P.shape, temperature, num_mc_samples)
+        log_P = (log_mu_P_rep + gumbel_noise * gumbel_scale) / temperature     
+        log_P = vectorised_sinkhorn_logspace(log_P, num_sinkhorn)
+        P = torch.exp(log_P)
+        # observation likelihood
+        distortion = distortion + vectorised_log_likelihood_ebm(P) / num_mc_samples        
         # KL divergence
-        #FIXME
         rate = gumbel_distance(log_mu_P, temperature_prior, temperature)
-        print (distortion, rate)
         # entropy term for \mu?
         if return_dr:
             return -(distortion + rate), distortion, rate
@@ -302,7 +281,7 @@ if __name__ == "__main__":
 
         num_correct_mc = []
         for i in range(num_mc_samples):
-            P_sample = (log_mu_P + sample_gumbel(log_mu_P.shape, temperature)[0] * gumbel_noise) / temperature
+            P_sample = (log_mu_P + sample_gumbel(log_mu_P.shape, temperature)[0] * gumbel_scale) / temperature
             P_sample = sinkhorn_logspace(P_sample, num_sinkhorn)
             ##Notice how we limit the variance
             P_sample = torch.exp(P_sample)
@@ -416,13 +395,13 @@ if __name__ == "__main__":
 
     P_samples, S_samples, kt_samples, num_corrects = [], [], [], []
     freq_vi = np.zeros(len(seq_true[0]))
-    #    gumbel_noise = 1.
-    print ('Sampling posterior with gumbel noise', gumbel_noise)
+    #    gumbel_scale = 1.
+    print ('Sampling posterior with gumbel noise', gumbel_scale)
     if do_plot:
         fig = plt.figure(figsize=(10, 10), facecolor='white')
     for i in range(4):
         for j in range(4):
-            P_sample = (log_mu_P_post + sample_gumbel(log_mu_P_post.shape, temperature)[0] * gumbel_noise) / temperature
+            P_sample = (log_mu_P_post + sample_gumbel(log_mu_P_post.shape, temperature)[0] * gumbel_scale) / temperature
             P_sample = sinkhorn_logspace(P_sample, num_sinkhorn)
             ##Notice how we limit the variance
             P_sample = torch.exp(P_sample)
