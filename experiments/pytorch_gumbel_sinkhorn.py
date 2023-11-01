@@ -14,10 +14,14 @@ import autograd.numpy.random as npr
 from autograd.scipy.special import gammaln
 import scipy as sp
 
-torch.set_default_dtype(torch.float64)
-eps = torch.finfo(torch.float64).eps
-
-is_cuda = torch.cuda.is_available()
+#torch.set_default_dtype(torch.float64)
+#eps = torch.finfo(torch.float64).eps
+eps = torch.finfo(torch.float32).eps
+is_cuda = True#torch.cuda.is_available()
+if is_cuda:
+    device = 'cuda'
+else:
+    device = 'cpu'
 
 def to_var(x):
     if is_cuda:
@@ -121,8 +125,8 @@ if __name__ == "__main__":
     do_mcmc = 0
     do_plot = 0
 
-    n_ppl = 200
-    n_bms = 10
+    n_ppl = 10000#2000
+    n_bms = 10000#4096
     n_obs = 1
     # FIXME: systematically test dependency on these hyperparameters
     num_iters = 100
@@ -130,16 +134,16 @@ if __name__ == "__main__":
     num_sinkhorn = 10
     temperature = 1.# need to optimise this hyperparameter; higher powers can do better at high noise
     temperature_prior = 1.
-    gumbel_scale = .1
+    gumbel_scale = .0
     sigmasq_prior = 1.
     if gumbel_scale > 0:
         num_mc_samples = 10
     else:
         num_mc_samples = 1
-    data_noise = 1.0
+    data_noise = 0.1
     print ('n_ppl {} n_bms {} num_iters {} step_size {} num_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} num_mc_samples {} data_noise {}'.format(n_ppl, n_bms, num_iters, step_size, num_sinkhorn, temperature, temperature_prior, gumbel_scale, num_mc_samples, data_noise))
     
-    params = [to_var(torch.zeros((n_bms, n_bms), requires_grad=True))]
+    params = [to_var(torch.zeros((n_bms, n_bms), requires_grad=True, device=device))]
     seq_true = np.array([npr.permutation(n_bms)])
     
     from sim_funcs import gen_data
@@ -184,16 +188,12 @@ if __name__ == "__main__":
     from kde_ebm.mixture_model import fit_all_gmm_models, get_prob_mat
     from kde_ebm.plotting import plotting
     mixtures = fit_all_gmm_models(X0, labels)
-    for row in mixtures:
-         if row.theta[1] < 1E-2 or row.theta[3] < 1E-2 or row.theta[-1] < 1E-2:
-        #        if row.theta[0] < 1E-1 and row.theta[1] < 1E-1:
-            print (row.theta)
     if do_plot:    
         fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
     prob_mat = get_prob_mat(X, mixtures)
     for row in prob_mat:
         if np.any(np.isnan(row)):
-            print ('nan in prob_mat! setting probability equal')
+            print ('nan in prob_mat!')
             #FIXME: hack
             #            row[np.isnan(row)] = 0.5
 
@@ -223,14 +223,6 @@ if __name__ == "__main__":
             mcmc_likes.append(x.score)
             kt_mcmc_iter.append(sp.stats.kendalltau(x.ordering, seq_true)[0])
 
-        """
-        seen = []
-        for x in mcmc_orders:
-            if not np.any(np.all(x == seen, axis=1)):
-                seen.append(x)
-        print (seen)
-        quit()
-        """
         if do_plot:
             fig, ax = plotting.mcmc_uncert_mat(mcmc_samples, score_names=np.arange(X0.shape[1]).astype(str))#, title='')
             plt.show()
@@ -239,26 +231,9 @@ if __name__ == "__main__":
         kt_mcmc = sp.stats.kendalltau(ebm_order.ordering, seq_true)
         print ('S_mcmc, kt_mcmc',ebm_order,kt_mcmc)
         print ('frac_correct', np.sum(ebm_order.ordering==seq_true)/n_bms, ' chance ', 1/n_bms)
-        quit()
-        freq_mcmc = np.zeros(len(seq_true))
-        for i in range(len(mcmc_samples)):
-            for j in range(len(seq_true)):
-                if seq_true[j] == mcmc_samples[i].ordering[j]:
-                    freq_mcmc[j] += 1
-        freq_mcmc /= 100000
-        #        print (freq_mcmc)
-        probright_mcmc, count = 0, 0
-        for i in range(len(seq_true)):
-            if seq_true[i] != mcmc_samples[0].ordering[i]:
-                probright_mcmc += freq_mcmc[i]
-                count += 1
-        if count != 0:
-            probright_mcmc /= count
-        #        print (probright_mcmc)    
-        #    plt.show()
 
     # convert prob_mat to torch
-    prob_mat = torch.tensor(prob_mat)
+    prob_mat = to_var(torch.tensor(prob_mat, dtype=torch.float32))
     
     # Build variational objective.
     def sinkhorn_logspace(logP, n_iters=10):
@@ -306,7 +281,7 @@ if __name__ == "__main__":
         P = torch.exp(log_P)
         # observation likelihood
         #        distortion = vectorised_log_likelihood_ebm(P) / num_mc_samples
-        distortion = vectorised_log_likelihood_ebm_logspace(P) / num_mc_samples
+        distortion = to_var(vectorised_log_likelihood_ebm_logspace(P) / num_mc_samples)
         # KL divergence
         rate = to_var(gumbel_distance(log_mu_P, temperature_prior, temperature))
         # entropy term for \mu?
@@ -355,7 +330,7 @@ if __name__ == "__main__":
             P_sample = torch.exp(P_sample)
             # Round doubly stochastic matrix P to the nearest permutation matrix
             row, col = torch.linear_sum_assignment(-P_sample)
-            num_correct = n_correct(perm_to_P(col.detach().numpy()), P_true)
+            num_correct = n_correct(perm_to_P(col.detach().cpu().numpy()), P_true)
             num_correct_mc.append(num_correct)
         frac_correct_mean.append(np.mean([x/n_bms for x in num_correct_mc]))
         print ('frac_correct',np.mean([x/n_bms for x in num_correct_mc]), np.std([x/n_bms for x in num_correct_mc]),' chance ',1/n_bms)
@@ -379,7 +354,7 @@ if __name__ == "__main__":
     print("Variational inference for matching...")
     t_start = time.time()
     # FIXME: why does adam work so much better than sgd?
-    optimizer = torch.optim.Adam(params, lr=step_size, eps=1e-8)
+    optimizer = torch.optim.Adam(params, lr=step_size, eps=eps)
     for i in range(num_iters):
         # Training phase
         #        model.train()
@@ -445,7 +420,7 @@ if __name__ == "__main__":
     """
     # Sample from the posterior and show samples
     n_samples = 100
-    gumbel_scale = 1.0
+#    gumbel_scale = 1.0
     log_mu_P = params[0]
     log_mu_P_rep = log_mu_P.unsqueeze(2).repeat(1, 1, n_samples)
     # sample Gumbel noise
@@ -456,7 +431,7 @@ if __name__ == "__main__":
     log_P = vectorised_sinkhorn_logspace(log_P, num_sinkhorn)
     # note zero variance
     P_samples = torch.exp(log_P)
-    P_samples = np.array([x.detach().numpy() for x in P_samples])
+    P_samples = np.array([x.detach().cpu().numpy() for x in P_samples])
     # round to permutation matrices
     P_hard_samples = vectorised_round_to_perm(P_samples)
     # sequences
@@ -473,80 +448,78 @@ if __name__ == "__main__":
 
     kt_vi = sp.stats.kendalltau(S_mode, seq_true.astype(int))
     print ('S_true, S_vi, kt_vi', seq_true.astype(int), S_mode, kt_vi)
-    
-    #    if do_plot:
-    """
-    fig, ax = plt.subplots()
-    ax.imshow(P_true, interpolation='none', vmin=0, vmax=1)
-    ax.set_ylabel('Position')
-    ax.set_xlabel('Event')
-    ax.set_title('True P')
+    print ('frac_correct', np.sum(S_mode==seq_true)/n_bms, ' chance ', 1/n_bms)
+
+    if do_plot:
+        """
+        fig, ax = plt.subplots()
+        ax.imshow(P_true, interpolation='none', vmin=0, vmax=1)
+        ax.set_ylabel('Position')
+        ax.set_xlabel('Event')
+        ax.set_title('True P')
         
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.imshow(confusion_mat.T, interpolation='nearest', vmin=0, vmax=1)
-    ax.set_ylabel('Position')
-    ax.set_xlabel('Event')
-    ax.set_title('Inferred P_hard')    
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.imshow(confusion_mat.T, interpolation='nearest', vmin=0, vmax=1)
+        ax.set_ylabel('Position')
+        ax.set_xlabel('Event')
+        ax.set_title('Inferred P_hard')    
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.imshow(np.sum(P_samples, axis=2), interpolation='nearest', vmin=0, vmax=1)
-    ax.set_ylabel('Position')
-    ax.set_xlabel('Event')
-    ax.set_title('Inferred P_soft')
-    """
-    fig, ax = plt.subplots()
-    plt.gca().invert_yaxis()
-    ax.scatter(np.mean(S_samples, axis=0), np.arange(n_bms))
-    for i, txt in enumerate(np.arange(n_bms).astype(str)):
-        print (np.mean(S_samples, axis=0)[i])
-        ax.annotate(txt, (np.mean(S_samples, axis=0)[i]+0.05, i))
-    ax.set_ylabel('Feature', fontsize=20, labelpad=10)
-    ax.set_xlabel('Event', fontsize=20)
-    ax.set_xticklabels(np.arange(n_bms), fontsize=20)
-    ax.set_yticklabels(np.arange(n_bms), fontsize=20)
-    if n_bms >= 50 and n_bms < 500:
-        [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_major_ticks()) if i % 10 != 0]
-        [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_major_ticks()) if i % 10 != 0]
-        [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_ticklabels()) if i % 10 != 0]
-        [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_ticklabels()) if i % 10 != 0]
-    elif n_bms >= 500:
-        [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_major_ticks()) if i % 100 != 0]
-        [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_major_ticks()) if i % 100 != 0]
-        [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_ticklabels()) if i % 100 != 0]
-        [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_ticklabels()) if i % 100 != 0]
-    plt.subplots_adjust(bottom=0.1, top=0.95)
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.imshow(np.sum(P_samples, axis=2), interpolation='nearest', vmin=0, vmax=1)
+        ax.set_ylabel('Position')
+        ax.set_xlabel('Event')
+        ax.set_title('Inferred P_soft')
+        """
+        fig, ax = plt.subplots()
+        plt.gca().invert_yaxis()
+        ax.scatter(np.mean(S_samples, axis=0), np.arange(n_bms))
+        for i, txt in enumerate(np.arange(n_bms).astype(str)):
+            ax.annotate(txt, (np.mean(S_samples, axis=0)[i]+0.05, i))
+        ax.set_ylabel('Feature', fontsize=20, labelpad=10)
+        ax.set_xlabel('Event', fontsize=20)
+        ax.set_xticklabels(np.arange(n_bms), fontsize=20)
+        ax.set_yticklabels(np.arange(n_bms), fontsize=20)
+        if n_bms >= 50 and n_bms < 500:
+            [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_major_ticks()) if i % 10 != 0]
+            [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_major_ticks()) if i % 10 != 0]
+            [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_ticklabels()) if i % 10 != 0]
+            [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_ticklabels()) if i % 10 != 0]
+        elif n_bms >= 500:
+            [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_major_ticks()) if i % 100 != 0]
+            [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_major_ticks()) if i % 100 != 0]
+            [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_ticklabels()) if i % 100 != 0]
+            [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_ticklabels()) if i % 100 != 0]
+        plt.subplots_adjust(bottom=0.1, top=0.95)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.imshow(confusion_mat, interpolation='nearest', cmap='gray_r', label='vEBM')
-    ax.set_xticks(np.arange(n_bms))
-    ax.set_yticks(np.arange(n_bms))
-    ax.set_xticklabels(np.arange(n_bms), fontsize=20)
-    ax.set_yticklabels(np.arange(n_bms)[S_mode], fontsize=20)
-    if n_bms >= 50 and n_bms < 500:
-        [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_major_ticks()) if i % 10 != 0]
-        [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_major_ticks()) if i % 10 != 0]
-        [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_ticklabels()) if i % 10 != 0]
-        [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_ticklabels()) if i % 10 != 0]
-    elif n_bms >= 500:
-        [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_major_ticks()) if i % 100 != 0]
-        [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_major_ticks()) if i % 100 != 0]
-        [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_ticklabels()) if i % 100 != 0]
-        [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_ticklabels()) if i % 100 != 0]
-    ax.set_ylabel('Feature', fontsize=20, labelpad=10)
-    ax.set_xlabel('Event', fontsize=20)
-    for i in range(n_bms):
-        if i==0:
-            rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=True, color='black', linewidth=2, label='vEBM')
-            ax.add_patch(rect)
-            rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=False, color='red', linewidth=2, label='True')
-            ax.add_patch(rect)
-        else:
-            rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=False, color='red', linewidth=2)
-            ax.add_patch(rect)
-    plt.subplots_adjust(bottom=0.1, top=0.95)
-    ax.legend(fontsize=20)
-    plt.show()
-    quit()
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.imshow(confusion_mat, interpolation='nearest', cmap='gray_r', label='vEBM')
+        ax.set_xticks(np.arange(n_bms))
+        ax.set_yticks(np.arange(n_bms))
+        ax.set_xticklabels(np.arange(n_bms), fontsize=20)
+        ax.set_yticklabels(np.arange(n_bms)[S_mode], fontsize=20)
+        if n_bms >= 50 and n_bms < 500:
+            [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_major_ticks()) if i % 10 != 0]
+            [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_major_ticks()) if i % 10 != 0]
+            [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_ticklabels()) if i % 10 != 0]
+            [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_ticklabels()) if i % 10 != 0]
+        elif n_bms >= 500:
+            [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_major_ticks()) if i % 100 != 0]
+            [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_major_ticks()) if i % 100 != 0]
+            [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_ticklabels()) if i % 100 != 0]
+            [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_ticklabels()) if i % 100 != 0]
+        ax.set_ylabel('Feature', fontsize=20, labelpad=10)
+        ax.set_xlabel('Event', fontsize=20)
+        for i in range(n_bms):
+            if i==0:
+                rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=True, color='black', linewidth=2, label='vEBM')
+                ax.add_patch(rect)
+                rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=False, color='red', linewidth=2, label='True')
+                ax.add_patch(rect)
+            else:
+                rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=False, color='red', linewidth=2)
+                ax.add_patch(rect)
+        plt.subplots_adjust(bottom=0.1, top=0.95)
+        ax.legend(fontsize=20)
     """
     if do_plot:
         sigma_post = np.exp(log_sigmasq_post)
@@ -558,175 +531,14 @@ if __name__ == "__main__":
             ax.flat[i].hist(np.random.normal(log_mu_P_post.flatten()[i], sigma_post.flatten()[i], 1000))
             ax.flat[i].set_xlim(-10,10)
     """
-
-    P_samples, S_samples, kt_samples, num_corrects = [], [], [], []
-    freq_vi = np.zeros(len(seq_true))
-    #    gumbel_scale = 1.
-    print ('Sampling posterior with gumbel noise', gumbel_scale)
-    if do_plot:
-        fig = plt.figure(figsize=(10, 10), facecolor='white')
-    for i in range(4):
-        for j in range(4):
-            P_sample = (log_mu_P_post + sample_gumbel(log_mu_P_post.shape, temperature)[0] * gumbel_scale) / temperature
-            P_sample = sinkhorn_logspace(P_sample, num_sinkhorn)
-            ##Notice how we limit the variance
-            P_sample = torch.exp(P_sample)
-            P_sample = P_sample.detach().numpy()[0]
-            P_samples.append(P_sample)
-            #            print (np.min(P_sample), np.max(P_sample))
-
-            for k in range(len(seq_true)):
-                freq_vi[k] += P_sample[k, int(seq_true[0,k])]
-
-            if do_plot:
-                ax = fig.add_subplot(4, 4, i*4 + j +1, frameon=True)
-                ax.imshow(P_sample, interpolation="none", vmin=0, vmax=1)
-                ax.set_title("Sample "+str((i*5)+j))
-            
-            # Round doubly stochastic matrix P to the nearest permutation matrix
-            row, col = sp.optimize.linear_sum_assignment(-P_sample)
-
-            P_sample = round_to_perm(P_sample)
-            
-            num_correct = n_correct(P_sample, P_true)
-            num_corrects.append(num_correct)
-            print ('frac_correct', num_correct/n_bms)
-            
-            S_sample = np.dot(P_sample, np.arange(P_sample.shape[0]))
-            S_samples.append(S_sample)
-            #            print (np.dot(P_sample, np.arange(P_sample.shape[0])), np.dot(P_true, np.arange(P_true.shape[0])))
-            kt_sample = sp.stats.kendalltau(S_sample, seq_true.astype(int))
-            #            print (kt_sample)
-            kt_samples.append(kt_sample)
-            
-            """
-            ax = fig.add_subplot(4, 4, i*4 + j +1, frameon=True)
-            for k in range(n_bms):
-                plt.plot(X[k, 0], X[k, 1], 'sk', markersize=8)
-                plt.plot(mus[k, 0], mus[k, 1], 'ok', markersize=8)
-
-            for k in range(n_bms):
-                plt.plot(mus[k, 0], mus[k, 1], 'o',
-                         color=colors[k % len(colors)],  markersize=6)
-                plt.plot(X[col[k], 0], X[col[k], 1], 's',
-                         markersize=6, color=colors[k % len(colors)])
-            
-            # Scale bar
-            plt.plot([-5,-5+2*eta], [5,5], '-k', lw=3)
-
-            ax.set_xlim([-5.5, 5.5])
-            ax.set_ylim([-5.5, 5.5])
-            ax.set_xticks([])
-            ax.set_yticks([])
-            ax.set_title("Sample {}".format(i*4+j+1))
-            """
-    print ('tot frac_correct',np.mean([x/n_bms for x in num_corrects]), np.std([x/n_bms for x in num_corrects]),' chance ',1/n_bms)
-    #    print (np.mean(kt_samples))
-    S_unique, counts = np.unique(S_samples, axis=0, return_counts=True)
-    print (S_unique, counts)
-    S_mode = S_unique[np.argmax(counts)]
-    #FIXME
-    """
-    S_mode = [0]*n_bms
-    for i in range(n_bms):
-        pos = [0]*n_bms
-        for j in range(len(S_samples)):
-            pos[np.where(S_samples[j]==i)[0][0]] += 1
-        S_mode[np.argmax(pos)] = i
-    S_mode = np.array(S_mode)
-    """
-    confusion_mat = np.zeros((n_bms,n_bms))
-    for i in range(n_bms):
-        #        confusion_mat[i, :] = np.sum(np.array(S_samples) == S_mode[i], axis=0)
-        confusion_mat[i, :] = np.sum(np.array(S_samples) == np.arange(n_bms)[i], axis=0)
-    #    S_mode = np.argmax(confusion_mat, axis=0)
-    
-    kt_vi = sp.stats.kendalltau(S_mode, seq_true.astype(int))
-    print ('S_true, S_vi, kt_vi', seq_true.astype(int), S_mode, kt_vi)
-    
-    #    if do_plot:
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.imshow(confusion_mat.T, interpolation='nearest', cmap='Greens')
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.imshow(np.sum(P_samples, axis=0), interpolation='nearest', cmap='Greens')
-    
-    freq_vi /= 16
-    #    print (freq_vi)
-    probright_vi, count = 0, 0
-    for i in range(len(seq_true)):
-        if seq_true[i] != S_mode[i]:
-            probright_vi += freq_vi[i]
-            count += 1
-    if count != 0:
-        probright_vi /= count
-    #    print (probright_vi)
-
     if do_mcmc:
-        data_out = np.array([t_mcmc, kt_mcmc[0], probright_mcmc, t_vi, kt_vi[0], probright_vi])
+        data_out = np.array([t_mcmc, kt_mcmc[0], t_vi, kt_vi[0]])
         np.savetxt('sim'+str(seed)+'.csv', data_out, delimiter=',')
     else:
-        data_out = np.array([np.nan, np.nan, np.nan, t_vi, kt_vi[0], probright_vi])
+        data_out = np.array([np.nan, np.nan, t_vi, kt_vi[0]])
         np.savetxt('sim'+str(seed)+'.csv', data_out, delimiter=',')
         
     if do_plot:
         plt.show()
     else:
         quit()
-
-    """
-    ### ML greedy routine - for reference to VI
-    def greedy_ascent(prob_mat, n_iter=1000, n_init=10):
-        n_biomarkers = prob_mat.shape[1]
-        starts_dict = dict((x, []) for x in range(n_init))
-        mu_start = -2. # magic number
-        sigma_start = 5. # magic number
-        for start_idx in range(n_init):
-            current_mu = mu_start + npr.randn(1, n_biomarkers-1, n_biomarkers-1)[0]
-            current_sigma = logistic(sigma_start * npr.randn(1, n_biomarkers-1, n_biomarkers-1)[0])
-            Psi = current_mu + current_sigma * npr.randn(1, n_biomarkers-1, n_biomarkers-1)
-            P = psi_to_birkhoff(logistic(Psi[0]))
-            current_order = np.dot(round_to_perm(P), np.arange(n_biomarkers))
-            current_score = log_likelihood_ebm_S(current_order.astype(int))
-            starts_dict[start_idx].append([current_order, current_score])
-            for iter_n in range(1, n_iter):
-                new_mu = (current_mu + npr.randn(1, n_biomarkers-1, n_biomarkers-1))[0]
-                new_sigma = logistic(current_sigma * npr.randn(1, n_biomarkers-1, n_biomarkers-1)[0])
-                Psi = new_mu + new_sigma * npr.randn(1, n_biomarkers-1, n_biomarkers-1)
-                P = psi_to_birkhoff(logistic(Psi[0]))
-                new_order = np.dot(round_to_perm(P), np.arange(n_biomarkers))
-                new_score = log_likelihood_ebm_S(new_order.astype(int))
-                if new_score > current_score:
-                    #                    print (current_order, new_order)
-                    #                    print (np.min(new_mu), np.max(new_mu), np.mean(new_mu))
-                    #                    print (np.min(new_sigma), np.max(new_sigma), np.mean(new_sigma))
-                    current_order = new_order
-                    current_score = new_score
-                    current_mu = new_mu
-                    current_sigma = new_sigma
-                starts_dict[start_idx].append([current_order, current_score])
-        return starts_dict
-
-    n_init = 10
-    greedy_dict = greedy_ascent(prob_mat, n_iter=10000, n_init=n_init)
-    current_order = greedy_dict[0][-1][0]
-    current_like = greedy_dict[0][-1][1]
-    fig, ax = plt.subplots()
-    for key, value in greedy_dict.items():
-        scores = [x[1] for x in value]
-        iter_n = np.arange(len(scores))+1
-        ax.plot(iter_n, scores, label='Init {}'.format(key+1))
-    ax.legend(loc=0)
-    fig.suptitle('Greedy Ascent Traces')
-    
-    for i in range(1, n_init):
-        new_order = greedy_dict[i][-1][0]
-        new_like = greedy_dict[i][-1][1]
-        if new_like > current_like:
-            current_order = new_order
-            current_like = new_like
-    print (current_order, current_like)
-    print (log_likelihood_ebm_S(seq_true.astype(int)))
-    plt.show()
-    """
-    
