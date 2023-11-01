@@ -230,6 +230,11 @@ def gen_data(n_subtypes,
     for i in range(n_ppl):
         X0.append(X[i][:,0])
         stages_0.append(stages[i][0])
+    
+    from matplotlib import pyplot as plt
+    fig, ax = plt.subplots()
+    ax.hist(stages_0, bins=n_ppl)
+    
     X0 = np.array(X0)
     stages_0 = np.array(stages_0)
     X_temp, stages_temp, times_temp, jumps_temp = [], [], [], []
@@ -251,9 +256,12 @@ def gen_data(n_subtypes,
     times = np.array(times_temp)
     jumps = np.array(jumps_temp)
     # choose which subjects will be cases and which will be controls
-    MIN_CASE_STAGE = np.round((n_bms + 1) * 0.9)
-    index_case = np.where(stages_0 >=  MIN_CASE_STAGE)[0]
-    index_control = np.where(stages_0 <  1)[0]
+    #    MIN_CASE_STAGE = np.round((n_bms + 1) * 0.9)
+    #    index_case = np.where(stages_0 >=  MIN_CASE_STAGE)[0]
+    index_case = np.where(stages_0 > (n_bms-1))[0]
+    #    index_case = np.where(stages_0 > round(n_bms*0.95))[0]
+    index_control = np.where(stages_0 < 1)[0]
+    #    index_control = np.where(stages_0 < round(n_bms*0.05))[0]
     labels = 2 * np.ones(n_ppl, dtype=int) # 2 - intermediate value, not used in mixture model fitting
     labels[index_case] = 1 # 1 - cases
     labels[index_control] = 0 # 0 - controls
@@ -396,8 +404,8 @@ def gen_data_mixture(stages,
     #mean and variance for cases
     #if using mixture_GMM, use normal distribution with mean 1 and std. devs sampled from a range
     if mixture_style == 'mixture_GMM':
-        mean_cases                       = np.array(np.random.uniform(size=N_biomarkers))
-        #        mean_cases                       = np.array(np.random.uniform(size=N_biomarkers)+1.5) # PW: 1.5 to look more like ADNI SNR
+        #        mean_cases                       = np.array(np.random.uniform(size=N_biomarkers))
+        mean_cases                       = np.array(np.random.uniform(size=N_biomarkers)+1.5) # PW: 1.5 to look more like ADNI SNR
         std_cases                        = np.array([sigma_noise] * N_biomarkers)
     #if using mixture_KDE, use log normal with mean 0.5 and std devs sampled from a range
     elif mixture_style == 'mixture_KDE':

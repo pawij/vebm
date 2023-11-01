@@ -89,6 +89,7 @@ def log_likelihood_ebm(P, t):
     for i in range(k):
         p_perm.append(np.prod(p_yes[:, :i], 1)*np.prod(p_no[:, i:k-1], 1))
     p_perm = np.array(p_perm).T
+    print (p_perm)
     ll = np.sum(np.log(np.sum((1./k)*p_perm, 1)+1e-250))
     return ll
 
@@ -105,7 +106,7 @@ def log_likelihood_ebm_S(S_int):
 if __name__ == "__main__":
 
     do_mcmc = 0
-    do_plot = 1
+    do_plot = 0
 
     n_ppl = 2000
     n_bms = 400
@@ -120,12 +121,12 @@ if __name__ == "__main__":
     sigma_start = -2.
     sigmasq_prior = 1.
     if gumbel_noise > 0:
-        num_mcmc_samples = 10
+        num_mc_samples = 10
     else:
-        num_mcmc_samples = 1
+        num_mc_samples = 1
     data_noise = .1
     #    sigma_min, sigma_max = 1E-8, 1.#1E-3, 5.0
-    print ('num_iters, step_size, num_sinkhorn, sigma_start, temperature, temperature_prior, gumbel_noise, num_mcmc_samples, data_noise', num_iters, step_size, num_sinkhorn, sigma_start, temperature, temperature_prior, gumbel_noise, num_mcmc_samples, data_noise)
+    print ('num_iters, step_size, num_sinkhorn, sigma_start, temperature, temperature_prior, gumbel_noise, num_mc_samples, data_noise', num_iters, step_size, num_sinkhorn, sigma_start, temperature, temperature_prior, gumbel_noise, num_mc_samples, data_noise)
     
     init_mean = np.zeros((n_bms, n_bms)).ravel()
     init_logit_std = sigma_start * np.ones(n_bms**2)
@@ -235,8 +236,8 @@ if __name__ == "__main__":
             logP = logP - logsumexp(logP, axis=1, keepdims=True)
         return logP
 
-    def sample_gumbel(a, temperature, eps=1E-20):
-        return -np.log(-np.log(np.random.uniform(0, 1, (a[0], a[1])) + eps) + eps)
+    def sample_gumbel(a, temperature, n=1, eps=1E-20):
+        return -np.log(-np.log(np.random.uniform(0, 1, (n, a[0], a[1])) + eps) + eps)
 
     def q_entropy(log_sigmasq_P, temperature):
         #FIXME: check
@@ -245,7 +246,7 @@ if __name__ == "__main__":
     def variational_objective(params, t, return_dr=False):
         """Provides a stochastic estimate of the variational lower bound."""
         log_mu_P, log_sigmasq_P = unpack_params(params)
-        
+        #FIXME: move out of function scope
         def gumbel_distance(log_mu_P, temperature_prior, temperature):
             #FIXME: check
             arr = np.sum(np.log(temperature_prior) - 0.5772156649 * temperature_prior / temperature -
@@ -256,27 +257,48 @@ if __name__ == "__main__":
 
         # calculate ELBO
         distortion, rate = 0., 0.
-        for n in range(num_mcmc_samples):
-            log_P = (log_mu_P + sample_gumbel(log_mu_P.shape, temperature) * gumbel_noise) / temperature
+        for n in range(num_mc_samples):
+            log_P = (log_mu_P + sample_gumbel(log_mu_P.shape, temperature)[0] * gumbel_noise) / temperature
             log_P = sinkhorn_logspace(log_P, num_sinkhorn)
             ##Notice how we limit the variance
             # if we also sampled from variance then 'P' could be real valued, which 'log_likelihood_ebm' does not support
             P = np.exp(log_P)
             # observation
-            distortion = distortion + log_likelihood_ebm(P, t) / num_mcmc_samples
-            # prior
-            distortion = distortion + unconstrained_log_prior(P, sigmasq_prior) / num_mcmc_samples
+            distortion = distortion + log_likelihood_ebm(P, t) / num_mc_samples
+            # prior?
+            #            distortion = distortion + unconstrained_log_prior(P, sigmasq_prior) / num_mc_samples
+        """
+        log_P = (np.repeat(log_mu_P, num_mc_samples) + sample_gumbel(log_mu_P.shape, temperature, num_mc_samples) * gumbel_noise) / temperature
+        def vectorised_gumbel_logspace(log_P, niters):
+            for _ in range(niters):
+                log_P = log_P - logsumexp(log_P.reshape(log_P.shape[0], log_P.shape[1]*log_P.shape[1]), axis=0, keepdims=True)
+                log_P = log_P - logsumexp(log_P.reshape(log_P.shape[0]*log_P.shape[0], log_P.shape[1]), axis=1, keepdims=True)
+            return log_P
+        def vectorised_log_likelihood_ebm(P, t):
+            # check Leon's version
+            p_yes = np.dot(prob_mat[:, :, 1], P.T)
+            p_no = np.dot(prob_mat[:, :, 0], P.T)
+            k = prob_mat.shape[1]+1
+            p_perm = []
+            for i in range(k):
+                p_perm.append(np.prod(p_yes[:, :i], 1)*np.prod(p_no[:, i:k-1], 1))
+            p_perm = np.array(p_perm).T
+            ll = np.sum(np.log(np.sum((1./k)*p_perm, 1)+1e-250))
+            return ll
+        log_P = vectorised_gumbel_logspace(log_P, num_sinkhorn)
+        P = np.exp(log_P)
+        distortion = distortion + vectorised_log_likelihood_ebm(P, t) / num_mc_samples
+        """
         # KL divergence
         rate = rate + gumbel_distance(log_mu_P, temperature_prior, temperature)
-        # entropy
-        rate = rate + q_entropy(log_sigmasq_P, temperature)
+        # entropy term for \mu?
         if return_dr:
             return -(distortion + rate), distortion, rate
         else:
             return -(distortion + rate)
     
     gradient = grad(variational_objective)
-    elbos, sigmas_mean, means_mean, rates, distortions, kt_vi_iter, num_corrects = [], [], [], [], [], [], []
+    elbos, sigmas_mean, means_mean, rates, distortions, kt_vi_iter, num_corrects, frac_correct_mean = [], [], [], [], [], [], [], []
 
     ### Plotting
     """
@@ -308,16 +330,20 @@ if __name__ == "__main__":
         print("log_mu_P min: ", log_mu_P.min(), "\t log_mu_P max: ", log_mu_P.max(), "\t log_mu_P mean: ", log_mu_P.mean())
         print("sigma min: ", sigma.min(), "\t sigma max: ", sigma.max(), "\t sigma mean: ", sigma.mean())
 
-        P_sample = (log_mu_P + sample_gumbel(log_mu_P.shape, temperature) * gumbel_noise) / temperature
-        P_sample = sinkhorn_logspace(P_sample, num_sinkhorn)
-        ##Notice how we limit the variance
-        P_sample = np.exp(P_sample)
-        print (np.min(P_sample), np.max(P_sample))
-        # Round doubly stochastic matrix P to the nearest permutation matrix
-        row, col = linear_sum_assignment(-P_sample)
-        num_correct = n_correct(perm_to_P(col), P_true)
-        num_corrects.append(num_correct)
-        print ('frac_correct',num_corrects[-1]/n_bms)
+        num_correct_mc = []
+        for i in range(num_mc_samples):
+            P_sample = (log_mu_P + sample_gumbel(log_mu_P.shape, temperature)[0] * gumbel_noise) / temperature
+            P_sample = sinkhorn_logspace(P_sample, num_sinkhorn)
+            ##Notice how we limit the variance
+            P_sample = np.exp(P_sample)
+            # Round doubly stochastic matrix P to the nearest permutation matrix
+            row, col = linear_sum_assignment(-P_sample)
+            num_correct = n_correct(perm_to_P(col), P_true)
+            num_correct_mc.append(num_correct)
+        frac_correct_mean.append(np.mean([x/n_bms for x in num_correct_mc]))
+        print ('frac_correct',np.mean([x/n_bms for x in num_correct_mc]), np.std([x/n_bms for x in num_correct_mc]),' chance ',1/n_bms)
+
+        
         #        print (np.dot(perm_to_P(col), np.arange(n_bms)))
 
         sigmas_mean.append(sigma.mean())
@@ -375,10 +401,10 @@ if __name__ == "__main__":
         plt.ylabel("rates")
         plt.tight_layout()
         plt.figure(figsize=(6,4))
-        plt.plot([x/n_bms for x in num_corrects])
+        plt.plot(frac_correct_mean)
         plt.xlim(0, num_iters)
         plt.xlabel("Iteration")
-        plt.ylabel("frac_correct")
+        plt.ylabel("frac_correct_mean")
         plt.tight_layout()
     """
     fig, ax = plt.subplots()
@@ -419,7 +445,7 @@ if __name__ == "__main__":
         fig = plt.figure(figsize=(10, 10), facecolor='white')
     for i in range(4):
         for j in range(4):
-            P_sample = (log_mu_P_post + sample_gumbel(log_mu_P_post.shape, temperature) * gumbel_noise) / temperature
+            P_sample = (log_mu_P_post + sample_gumbel(log_mu_P_post.shape, temperature)[0] * gumbel_noise) / temperature
             P_sample = sinkhorn_logspace(P_sample, num_sinkhorn)
             ##Notice how we limit the variance
             P_sample = np.exp(P_sample)

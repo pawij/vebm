@@ -121,23 +121,23 @@ if __name__ == "__main__":
     do_mcmc = 0
     do_plot = 0
 
-    n_ppl = 5000
-    n_bms = 1000
+    n_ppl = 200
+    n_bms = 10
     n_obs = 1
     # FIXME: systematically test dependency on these hyperparameters
     num_iters = 100
     step_size = 1E-1
     num_sinkhorn = 10
-    temperature = 1.
+    temperature = 1.# need to optimise this hyperparameter; higher powers can do better at high noise
     temperature_prior = 1.
-    gumbel_scale = 0.1
+    gumbel_scale = .1
     sigmasq_prior = 1.
     if gumbel_scale > 0:
         num_mc_samples = 10
     else:
         num_mc_samples = 1
-    data_noise = 0.1
-    print ('num_iters, step_size, num_sinkhorn, temperature, temperature_prior, gumbel_scale, num_mc_samples, data_noise', num_iters, step_size, num_sinkhorn, temperature, temperature_prior, gumbel_scale, num_mc_samples, data_noise)
+    data_noise = 1.0
+    print ('n_ppl {} n_bms {} num_iters {} step_size {} num_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} num_mc_samples {} data_noise {}'.format(n_ppl, n_bms, num_iters, step_size, num_sinkhorn, temperature, temperature_prior, gumbel_scale, num_mc_samples, data_noise))
     
     params = [to_var(torch.zeros((n_bms, n_bms), requires_grad=True))]
     seq_true = np.array([npr.permutation(n_bms)])
@@ -179,14 +179,24 @@ if __name__ == "__main__":
         pickle.dump(data, pickle_file)
         pickle_file.close()
         seq_true = seq_true[0]
-    
+
+    print ('labels', np.unique(labels, return_counts=True))
     from kde_ebm.mixture_model import fit_all_gmm_models, get_prob_mat
     from kde_ebm.plotting import plotting
     mixtures = fit_all_gmm_models(X0, labels)
-    prob_mat = get_prob_mat(X, mixtures)
-
+    for row in mixtures:
+         if row.theta[1] < 1E-2 or row.theta[3] < 1E-2 or row.theta[-1] < 1E-2:
+        #        if row.theta[0] < 1E-1 and row.theta[1] < 1E-1:
+            print (row.theta)
     if do_plot:    
         fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
+    prob_mat = get_prob_mat(X, mixtures)
+    for row in prob_mat:
+        if np.any(np.isnan(row)):
+            print ('nan in prob_mat! setting probability equal')
+            #FIXME: hack
+            #            row[np.isnan(row)] = 0.5
+
     P_true = np.zeros((n_bms, n_bms))
     P_true[np.arange(n_bms), seq_true.astype(int)] = 1
         
@@ -249,10 +259,6 @@ if __name__ == "__main__":
 
     # convert prob_mat to torch
     prob_mat = torch.tensor(prob_mat)
-    for row in prob_mat:
-        if torch.any(torch.isnan(row)):
-            print ('nan in prob_mat')
-            quit()
     
     # Build variational objective.
     def sinkhorn_logspace(logP, n_iters=10):
@@ -438,7 +444,8 @@ if __name__ == "__main__":
     plt.legend()
     """
     # Sample from the posterior and show samples
-    n_samples = 1000
+    n_samples = 100
+    gumbel_scale = 1.0
     log_mu_P = params[0]
     log_mu_P_rep = log_mu_P.unsqueeze(2).repeat(1, 1, n_samples)
     # sample Gumbel noise
@@ -487,13 +494,35 @@ if __name__ == "__main__":
     ax.set_xlabel('Event')
     ax.set_title('Inferred P_soft')
     """
+    fig, ax = plt.subplots()
+    plt.gca().invert_yaxis()
+    ax.scatter(np.mean(S_samples, axis=0), np.arange(n_bms))
+    for i, txt in enumerate(np.arange(n_bms).astype(str)):
+        print (np.mean(S_samples, axis=0)[i])
+        ax.annotate(txt, (np.mean(S_samples, axis=0)[i]+0.05, i))
+    ax.set_ylabel('Feature', fontsize=20, labelpad=10)
+    ax.set_xlabel('Event', fontsize=20)
+    ax.set_xticklabels(np.arange(n_bms), fontsize=20)
+    ax.set_yticklabels(np.arange(n_bms), fontsize=20)
+    if n_bms >= 50 and n_bms < 500:
+        [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_major_ticks()) if i % 10 != 0]
+        [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_major_ticks()) if i % 10 != 0]
+        [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_ticklabels()) if i % 10 != 0]
+        [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_ticklabels()) if i % 10 != 0]
+    elif n_bms >= 500:
+        [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_major_ticks()) if i % 100 != 0]
+        [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_major_ticks()) if i % 100 != 0]
+        [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_ticklabels()) if i % 100 != 0]
+        [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_ticklabels()) if i % 100 != 0]
+    plt.subplots_adjust(bottom=0.1, top=0.95)
+
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.imshow(confusion_mat, interpolation='nearest', cmap='gray_r', label='VEM')
+    ax.imshow(confusion_mat, interpolation='nearest', cmap='gray_r', label='vEBM')
     ax.set_xticks(np.arange(n_bms))
     ax.set_yticks(np.arange(n_bms))
     ax.set_xticklabels(np.arange(n_bms), fontsize=20)
     ax.set_yticklabels(np.arange(n_bms)[S_mode], fontsize=20)
-    if n_bms >= 50:
+    if n_bms >= 50 and n_bms < 500:
         [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_major_ticks()) if i % 10 != 0]
         [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_major_ticks()) if i % 10 != 0]
         [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_ticklabels()) if i % 10 != 0]
@@ -507,14 +536,14 @@ if __name__ == "__main__":
     ax.set_xlabel('Event', fontsize=20)
     for i in range(n_bms):
         if i==0:
-            rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=True, color='black', linewidth=2, label='VEM')
+            rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=True, color='black', linewidth=2, label='vEBM')
             ax.add_patch(rect)
             rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=False, color='red', linewidth=2, label='True')
             ax.add_patch(rect)
         else:
             rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=False, color='red', linewidth=2)
             ax.add_patch(rect)
-    plt.subplots_adjust(bottom=0.1, top=0.99)
+    plt.subplots_adjust(bottom=0.1, top=0.95)
     ax.legend(fontsize=20)
     plt.show()
     quit()
