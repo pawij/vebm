@@ -13,6 +13,9 @@ import autograd.numpy as np
 import autograd.numpy.random as npr
 from autograd.scipy.special import gammaln
 import scipy as sp
+import pandas as pd
+import torchio as tio
+from os import listdir
 
 is_cuda = torch.cuda.is_available()
 if is_cuda:
@@ -126,9 +129,6 @@ if __name__ == "__main__":
     do_mcmc = 0
     do_plot = 0
 
-    n_ppl = 10000#2000
-    n_bms = 10000#4096
-    n_obs = 1
     # FIXME: systematically test dependency on these hyperparameters
     num_iters = 100
     step_size = 1E-1
@@ -141,50 +141,29 @@ if __name__ == "__main__":
         num_mc_samples = 10
     else:
         num_mc_samples = 1
-    data_noise = 0.1
-    print ('n_ppl {} n_bms {} num_iters {} step_size {} num_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} num_mc_samples {} data_noise {}'.format(n_ppl, n_bms, num_iters, step_size, num_sinkhorn, temperature, temperature_prior, gumbel_scale, num_mc_samples, data_noise))
+
+    path = '/home/paww20/data/MyelinAge/'
+    df = pd.read_csv(path+'meta.csv')
+    files = [x for x in listdir(path) if not 'csv' in x]
+    X, X0, labels = [], [] ,[]
+    for i,f in enumerate(files):
+        img = tio.ScalarImage(path+f+'/t1.nii.gz')
+        trf = tio.CropOrPad((36,36,36))
+        img = trf(img)
+        X_i = img.data.detach().numpy().ravel()
+        X.append(X_i)
+        X0.append(X_i)
+        labels.append(1 if df.iloc[i]['age'] > np.mean(df['age'].values) else 0)
+    X = np.array(X)
+    X0 = np.array(X0)
+    labels = np.array(labels)
+    n_ppl, n_bms = X.shape[0], X.shape[1]
+    
+    print ('n_ppl {} n_bms {} num_iters {} step_size {} num_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} num_mc_samples {}'.format(n_ppl, n_bms, num_iters, step_size, num_sinkhorn, temperature, temperature_prior, gumbel_scale, num_mc_samples))
     
     params = [to_var(torch.zeros((n_bms, n_bms), requires_grad=True, device=device))]
     seq_true = np.array([npr.permutation(n_bms)])
     
-    from sim_funcs import gen_data
-    model_type = 'GMM'#'Zscore'
-    if model_type=='GMM':
-        n_zscores = None
-        z_max = None
-        n_components = n_bms+1
-    else:
-        n_zscores = 2
-        z_max = 3
-        n_components = int(n_bms*n_zscores+1)
-    is_cut = False
-    fwd_only = False
-    order = n_bms
-    scale = .5
-    sim_file = Path('data/simdata_n_ppl_'+str(n_ppl)+'_n_bms_'+str(n_bms)+'_data_noise_'+str(data_noise)+'.csv')
-    
-    if sim_file.is_file():
-        print ('Loading simulated data...')
-        pickle_file = open(sim_file, 'rb')
-        data = pickle.load(pickle_file)
-        X = data['X']
-        labels = data['labels']
-        X0 = data['X0']
-        seq_true = data['seq_true'][0]
-        pickle_file.close()
-    else:
-        print ('Generating simulated data...')
-        X, lengths, jumps, labels, X0, stages_true, times, seq_true, Q, pi0, _ = gen_data(1, n_ppl, n_bms, n_obs, n_components, model_type=model_type, is_cut=is_cut, n_zscores=n_zscores, z_max=z_max, sigma_noise=data_noise, seq=seq_true, fractions=[1], fwd_only=fwd_only, order=order, time_mean=[1/scale])
-        data = {}
-        data['X'] = X
-        data['labels'] = labels
-        data['X0'] = X0
-        data['seq_true'] = seq_true
-        pickle_file = open(sim_file, 'wb')
-        pickle.dump(data, pickle_file)
-        pickle_file.close()
-        seq_true = seq_true[0]
-
     print ('labels', np.unique(labels, return_counts=True))
     from kde_ebm.mixture_model import fit_all_gmm_models, get_prob_mat
     from kde_ebm.plotting import plotting
