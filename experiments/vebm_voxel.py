@@ -20,12 +20,12 @@ from os import listdir
 is_cuda = torch.cuda.is_available()
 if is_cuda:
     device = 'cuda'
-    torch.set_default_dtype(torch.float32)
-    eps = torch.finfo(torch.float32).eps
+    dtype = torch.float32
 else:
     device = 'cpu'
-    torch.set_default_dtype(torch.float64)
-    eps = torch.finfo(torch.float64).eps
+    dtype = torch.float64
+torch.set_default_dtype(dtype)
+eps = torch.finfo(dtype).eps
 
 def to_var(x):
     if is_cuda:
@@ -141,30 +141,57 @@ if __name__ == "__main__":
         num_mc_samples = 10
     else:
         num_mc_samples = 1
+    nx, ny, nz = 10, 10, 10
+    data_file = Path('data/zenodo_voxel_data__nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.csv')
+    
+    if data_file.is_file():
+        print ('Loading data...')
+        pickle_file = open(data_file, 'rb')
+        data = pickle.load(pickle_file)
+        X = data['X']
+        labels = data['labels']
+        X0 = data['X0']
+        pickle_file.close()
+    else:
+        print ('Reading data...')
+        path = '/home/paww20/data/MyelinAge/'
+        df = pd.read_csv(path+'meta.csv')
+        files = [x for x in listdir(path) if not 'csv' in x]
+        X, X0, labels = [], [] ,[]
+        for i,f in enumerate(files):
+            img = tio.ScalarImage(path+f+'/t1.nii.gz')
+            trf = tio.CropOrPad((nx,ny,nz))
+            img = trf(img)
+            X_i = img.data.detach().numpy().ravel()
+            X.append(X_i)
+            X0.append(X_i)
+            labels.append(1 if df.iloc[i]['age'] > np.mean(df['age'].values) else 0)
+        X = np.array(X)
+        X0 = np.array(X0)
+        labels = np.array(labels)
 
-    path = '/home/paww20/data/MyelinAge/'
-    df = pd.read_csv(path+'meta.csv')
-    files = [x for x in listdir(path) if not 'csv' in x]
-    X, X0, labels = [], [] ,[]
-    for i,f in enumerate(files):
-        img = tio.ScalarImage(path+f+'/t1.nii.gz')
-        trf = tio.CropOrPad((36,36,36))
-        img = trf(img)
-        X_i = img.data.detach().numpy().ravel()
-        X.append(X_i)
-        X0.append(X_i)
-        labels.append(1 if df.iloc[i]['age'] > np.mean(df['age'].values) else 0)
-    X = np.array(X)
-    X0 = np.array(X0)
-    labels = np.array(labels)
+        del_i = []
+        for i in range(X.shape[1]):
+            if np.all(X[:,i] == 0):
+                del_i.append(i)
+        X = np.delete(X, del_i, axis=1)
+        X0 = np.delete(X0, del_i, axis=1)
+    
+        data = {}
+        data['X'] = X
+        data['labels'] = labels
+        data['X0'] = X0
+        pickle_file = open(data_file, 'wb')
+        pickle.dump(data, pickle_file)
+        pickle_file.close()
+
     n_ppl, n_bms = X.shape[0], X.shape[1]
     
     print ('n_ppl {} n_bms {} num_iters {} step_size {} num_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} num_mc_samples {}'.format(n_ppl, n_bms, num_iters, step_size, num_sinkhorn, temperature, temperature_prior, gumbel_scale, num_mc_samples))
+    print ('labels', np.unique(labels, return_counts=True))
     
     params = [to_var(torch.zeros((n_bms, n_bms), requires_grad=True, device=device))]
-    seq_true = np.array([npr.permutation(n_bms)])
     
-    print ('labels', np.unique(labels, return_counts=True))
     from kde_ebm.mixture_model import fit_all_gmm_models, get_prob_mat
     from kde_ebm.plotting import plotting
     mixtures = fit_all_gmm_models(X0, labels)
@@ -177,9 +204,6 @@ if __name__ == "__main__":
             #FIXME: hack
             #            row[np.isnan(row)] = 0.5
 
-    P_true = np.zeros((n_bms, n_bms))
-    P_true[np.arange(n_bms), seq_true.astype(int)] = 1
-        
     t_start = time.time()    
     if do_mcmc:
         from kde_ebm import mcmc
@@ -198,22 +222,17 @@ if __name__ == "__main__":
             greedy_likes.append(temp)
         greedy_likes = np.mean(greedy_likes, axis=0)
         mcmc_likes = []
-        kt_mcmc_iter = []
         for x in mcmc_samples:
             mcmc_likes.append(x.score)
-            kt_mcmc_iter.append(sp.stats.kendalltau(x.ordering, seq_true)[0])
 
         if do_plot:
             fig, ax = plotting.mcmc_uncert_mat(mcmc_samples, score_names=np.arange(X0.shape[1]).astype(str))#, title='')
-            plt.show()
         mcmc_samples.sort(reverse=True)
-        ebm_order = mcmc_samples[0]
-        kt_mcmc = sp.stats.kendalltau(ebm_order.ordering, seq_true)
-        print ('S_mcmc, kt_mcmc',ebm_order,kt_mcmc)
-        print ('frac_correct', np.sum(ebm_order.ordering==seq_true)/n_bms, ' chance ', 1/n_bms)
+        mcmc_order = mcmc_samples[0]
+        print ('MCMC order', mcmc_order)
 
     # convert prob_mat to torch
-    prob_mat = to_var(torch.tensor(prob_mat, dtype=torch.float32))
+    prob_mat = to_var(torch.tensor(prob_mat, dtype=dtype))
     
     # Build variational objective.
     def sinkhorn_logspace(logP, n_iters=10):
@@ -300,24 +319,6 @@ if __name__ == "__main__":
         log_mu_P, log_sigmasq_P = unpack_params(params)
         sigma = np.sqrt(np.exp(log_sigmasq_P))
         print("log_mu_P min: ", log_mu_P.min(), "\t log_mu_P max: ", log_mu_P.max(), "\t log_mu_P mean: ", log_mu_P.mean())
-        print("sigma min: ", sigma.min(), "\t sigma max: ", sigma.max(), "\t sigma mean: ", sigma.mean())
-
-        num_correct_mc = []
-        for i in range(num_mc_samples):
-            P_sample = (log_mu_P + sample_gumbel(log_mu_P.shape, temperature)[0] * gumbel_scale) / temperature
-            P_sample = sinkhorn_logspace(P_sample, num_sinkhorn)
-            ##Notice how we limit the variance
-            P_sample = torch.exp(P_sample)
-            # Round doubly stochastic matrix P to the nearest permutation matrix
-            row, col = torch.linear_sum_assignment(-P_sample)
-            num_correct = n_correct(perm_to_P(col.detach().cpu().numpy()), P_true)
-            num_correct_mc.append(num_correct)
-        frac_correct_mean.append(np.mean([x/n_bms for x in num_correct_mc]))
-        print ('frac_correct',np.mean([x/n_bms for x in num_correct_mc]), np.std([x/n_bms for x in num_correct_mc]),' chance ',1/n_bms)
-
-        
-        #        print (np.dot(perm_to_P(col), np.arange(n_bms)))
-
         sigmas_mean.append(sigma.mean())
         means_mean.append(log_mu_P.mean())
         
@@ -419,16 +420,13 @@ if __name__ == "__main__":
     S_unique, counts = np.unique(S_samples, axis=0, return_counts=True)
     #    print (S_unique, counts)
     S_mode = S_unique[np.argmax(counts)].astype(int)
+    print ('VI order', S_mode)
     
     confusion_mat = np.zeros((n_bms, n_bms))
     for i in range(n_bms):
         confusion_mat[i, :] = np.sum(S_samples == S_mode[i], axis=0)
         #        confusion_mat[i, :] = np.sum(S_samples == np.arange(n_bms)[i], axis=0)
     #    S_mode = np.argmax(confusion_mat, axis=0)
-
-    kt_vi = sp.stats.kendalltau(S_mode, seq_true.astype(int))
-    print ('S_true, S_vi, kt_vi', seq_true.astype(int), S_mode, kt_vi)
-    print ('frac_correct', np.sum(S_mode==seq_true)/n_bms, ' chance ', 1/n_bms)
 
     if do_plot:
         """
@@ -489,17 +487,7 @@ if __name__ == "__main__":
             [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_ticklabels()) if i % 100 != 0]
         ax.set_ylabel('Feature', fontsize=20, labelpad=10)
         ax.set_xlabel('Event', fontsize=20)
-        for i in range(n_bms):
-            if i==0:
-                rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=True, color='black', linewidth=2, label='vEBM')
-                ax.add_patch(rect)
-                rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=False, color='red', linewidth=2, label='True')
-                ax.add_patch(rect)
-            else:
-                rect = plt.Rectangle((i-.5, np.where(S_mode[i]==seq_true)[0][0]-.5), 1, 1, fill=False, color='red', linewidth=2)
-                ax.add_patch(rect)
         plt.subplots_adjust(bottom=0.1, top=0.95)
-        ax.legend(fontsize=20)
     """
     if do_plot:
         sigma_post = np.exp(log_sigmasq_post)
