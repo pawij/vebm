@@ -142,7 +142,7 @@ if __name__ == "__main__":
     else:
         num_mc_samples = 1
     nx, ny, nz = 10, 10, 10
-    data_file = Path('data/zenodo_voxel_data_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.csv')
+    data_file = Path('data/zenodo_voxel_data_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.pkl')
     
     if data_file.is_file():
         print ('Loading data...')
@@ -154,7 +154,7 @@ if __name__ == "__main__":
         pickle_file.close()
     else:
         print ('Reading data...')
-        path = '/home/paww20/data/MyelinAge/'
+        path = '/its/home/paww20/data/MyelinAge/'
         df = pd.read_csv(path+'meta.csv')
         files = [x for x in listdir(path) if not 'csv' in x]
         X, X0, labels = [], [] ,[]
@@ -166,9 +166,6 @@ if __name__ == "__main__":
             X.append(X_i)
             X0.append(X_i)
             labels.append(1 if df.iloc[i]['age'] > np.mean(df['age'].values) else 0)
-        fig, ax = plt.subplots()
-        ax.hist(df['age'].values)
-        plt.show()
         X = np.array(X)
         X0 = np.array(X0)
         labels = np.array(labels)
@@ -198,9 +195,8 @@ if __name__ == "__main__":
     from kde_ebm.mixture_model import fit_all_gmm_models, get_prob_mat
     from kde_ebm.plotting import plotting
     mixtures = fit_all_gmm_models(X0, labels)
-    #    if do_plot:    
-    fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
-    plt.show()
+    if do_plot:    
+        fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
     prob_mat = get_prob_mat(X, mixtures)
     for row in prob_mat:
         if np.any(np.isnan(row)):
@@ -351,7 +347,6 @@ if __name__ == "__main__":
     
     t_vi = time.time()-t_start
     print ('after VI', t_vi)
-    # fig.savefig("permutation_K20.png")
 
     # Plot the elbo
     if do_plot:
@@ -425,15 +420,29 @@ if __name__ == "__main__":
     #    print (S_unique, counts)
     S_mode = S_unique[np.argmax(counts)].astype(int)
     print ('VI order', S_mode)
-    
-    confusion_mat = np.zeros((n_bms, n_bms))
-    for i in range(n_bms):
-        confusion_mat[i, :] = np.sum(S_samples == S_mode[i], axis=0)
-        #        confusion_mat[i, :] = np.sum(S_samples == np.arange(n_bms)[i], axis=0)
-    #    S_mode = np.argmax(confusion_mat, axis=0)
 
+    #    img_seq = []
+    for i in range(len(S_mode)):
+        arr = np.zeros(len(S_mode))
+        arr[S_mode[:i]] = 1
+        arr = np.array([arr.reshape(nx, nx, ny)])
+        img = tio.ScalarImage(tensor=torch.tensor(arr))
+        #        img_seq.append(img)
+        img.save('sim_'+str(seed)+'_vi_imgseq_'+str(i)+'.png')
+    """
+    data = {}
+    data['img_seq'] = img_seq
+    pickle_file = open('sim_'+str(seed)+'_vi_imgseq.pkl', 'wb')
+    pickle.dump(data, pickle_file)
+    pickle_file.close()
+    """
     if do_plot:
         """
+        confusion_mat = np.zeros((n_bms, n_bms))
+        for i in range(n_bms):
+            confusion_mat[i, :] = np.sum(S_samples == S_mode[i], axis=0)
+            #        confusion_mat[i, :] = np.sum(S_samples == np.arange(n_bms)[i], axis=0)
+        #    S_mode = np.argmax(confusion_mat, axis=0)
         fig, ax = plt.subplots()
         ax.imshow(P_true, interpolation='none', vmin=0, vmax=1)
         ax.set_ylabel('Position')
@@ -504,11 +513,11 @@ if __name__ == "__main__":
             ax.flat[i].set_xlim(-10,10)
     """
     if do_mcmc:
-        data_out = np.array([t_mcmc, kt_mcmc[0], t_vi, kt_vi[0]])
-        np.savetxt('sim'+str(seed)+'.csv', data_out, delimiter=',')
+        data_out = np.array([t_mcmc, t_vi])
+        np.savetxt('sim_mcmc'+str(seed)+'.csv', data_out, delimiter=',')
     else:
-        data_out = np.array([np.nan, np.nan, t_vi, kt_vi[0]])
-        np.savetxt('sim'+str(seed)+'.csv', data_out, delimiter=',')
+        data_out = np.array([np.nan, t_vi])
+        np.savetxt('sim_vi'+str(seed)+'.csv', data_out, delimiter=',')
         
     if do_plot:
         plt.show()
