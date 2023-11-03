@@ -142,7 +142,7 @@ if __name__ == "__main__":
     else:
         num_mc_samples = 1
     nx, ny, nz = 10, 10, 10
-    data_file = Path('data/zenodo_voxel_data__nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.csv')
+    data_file = Path('data/zenodo_voxel_data_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.csv')
     
     if data_file.is_file():
         print ('Loading data...')
@@ -166,6 +166,9 @@ if __name__ == "__main__":
             X.append(X_i)
             X0.append(X_i)
             labels.append(1 if df.iloc[i]['age'] > np.mean(df['age'].values) else 0)
+        fig, ax = plt.subplots()
+        ax.hist(df['age'].values)
+        plt.show()
         X = np.array(X)
         X0 = np.array(X0)
         labels = np.array(labels)
@@ -195,8 +198,9 @@ if __name__ == "__main__":
     from kde_ebm.mixture_model import fit_all_gmm_models, get_prob_mat
     from kde_ebm.plotting import plotting
     mixtures = fit_all_gmm_models(X0, labels)
-    if do_plot:    
-        fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
+    #    if do_plot:    
+    fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
+    plt.show()
     prob_mat = get_prob_mat(X, mixtures)
     for row in prob_mat:
         if np.any(np.isnan(row)):
