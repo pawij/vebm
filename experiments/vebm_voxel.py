@@ -141,10 +141,10 @@ if __name__ == "__main__":
         num_mc_samples = 10
     else:
         num_mc_samples = 1
-    nx, ny, nz = 10, 10, 10
-    data_file = Path('data/zenodo_voxel_data_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.pkl')
-    
-    if data_file.is_file():
+    nx, ny, nz = 32, 32, 16
+    data_file = Path('data/zenodo_voxel_data_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.pkl')
+
+    if False:#data_file.is_file():
         print ('Loading data...')
         pickle_file = open(data_file, 'rb')
         data = pickle.load(pickle_file)
@@ -154,14 +154,20 @@ if __name__ == "__main__":
         pickle_file.close()
     else:
         print ('Reading data...')
-        path = '/its/home/paww20/data/MyelinAge/'
+        path = '/home/paww20/data/MyelinAge/'
         df = pd.read_csv(path+'meta.csv')
         files = [x for x in listdir(path) if not 'csv' in x]
         X, X0, labels = [], [] ,[]
         for i,f in enumerate(files):
             img = tio.ScalarImage(path+f+'/t1.nii.gz')
-            trf = tio.CropOrPad((nx,ny,nz))
+            trf = tio.Resample((4, 4, 4))
             img = trf(img)
+            trf = tio.CropOrPad((nx, ny, nz))            
+            img = trf(img)
+            #            img.plot()
+            #            plt.imshow(img.data.detach().numpy()[0,:,:,10], interpolation='nearest')
+            #            plt.show()
+            #            X_i = img.data.detach().numpy()[0,:,:,10].ravel()
             X_i = img.data.detach().numpy().ravel()
             X.append(X_i)
             X0.append(X_i)
@@ -169,7 +175,7 @@ if __name__ == "__main__":
         X = np.array(X)
         X0 = np.array(X0)
         labels = np.array(labels)
-
+        
         del_i = []
         for i in range(X.shape[1]):
             if np.all(X[:,i] == 0):
@@ -421,21 +427,20 @@ if __name__ == "__main__":
     S_mode = S_unique[np.argmax(counts)].astype(int)
     print ('VI order', S_mode)
 
-    #    img_seq = []
     for i in range(len(S_mode)):
         arr = np.zeros(len(S_mode))
-        arr[S_mode[:i]] = 1
-        arr = np.array([arr.reshape(nx, nx, ny)])
+        arr[S_mode[:i]] = 1E3
+        arr = np.array([arr.reshape(nx, ny, nz)])
         img = tio.ScalarImage(tensor=torch.tensor(arr))
-        #        img_seq.append(img)
-        img.save('sim_'+str(seed)+'_vi_imgseq_'+str(i)+'.png')
-    """
-    data = {}
-    data['img_seq'] = img_seq
-    pickle_file = open('sim_'+str(seed)+'_vi_imgseq.pkl', 'wb')
-    pickle.dump(data, pickle_file)
-    pickle_file.close()
-    """
+        if i<10:
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_000'+str(i)+'4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+        elif i>=10 and i<100:
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_00'+str(i)+'4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+        elif i>=100 and i<1000:
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_0'+str(i)+'4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+        else:
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_'+str(i)+'4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+    
     if do_plot:
         """
         confusion_mat = np.zeros((n_bms, n_bms))
