@@ -141,10 +141,10 @@ if __name__ == "__main__":
         num_mc_samples = 10
     else:
         num_mc_samples = 1
-    nx, ny, nz = 32, 32, 16
+    nx, ny, nz = 32, 32, 10
     data_file = Path('data/zenodo_voxel_data_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.pkl')
 
-    if False:#data_file.is_file():
+    if data_file.is_file():
         print ('Loading data...')
         pickle_file = open(data_file, 'rb')
         data = pickle.load(pickle_file)
@@ -176,13 +176,6 @@ if __name__ == "__main__":
         X0 = np.array(X0)
         labels = np.array(labels)
         
-        del_i = []
-        for i in range(X.shape[1]):
-            if np.all(X[:,i] == 0):
-                del_i.append(i)
-        X = np.delete(X, del_i, axis=1)
-        X0 = np.delete(X0, del_i, axis=1)
-    
         data = {}
         data['X'] = X
         data['labels'] = labels
@@ -191,16 +184,36 @@ if __name__ == "__main__":
         pickle.dump(data, pickle_file)
         pickle_file.close()
 
-    n_ppl, n_bms = X.shape[0], X.shape[1]
-    
-    print ('n_ppl {} n_bms {} num_iters {} step_size {} num_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} num_mc_samples {}'.format(n_ppl, n_bms, num_iters, step_size, num_sinkhorn, temperature, temperature_prior, gumbel_scale, num_mc_samples))
-    print ('labels', np.unique(labels, return_counts=True))
-    
-    params = [to_var(torch.zeros((n_bms, n_bms), requires_grad=True, device=device))]
+    #FIXME: if we delete voxels then need to add them back in before writing
+    del_x = []
+    tol = 1
+    for i in range(X.shape[1]):
+        if (np.mean(X[labels==0][:,i]) < tol and np.mean(X[labels==1][:,i]) < tol and np.std(X[labels==0][:,i]) < tol and
+            np.std(X[labels==1][:,i]) < tol):
+            del_x.append(i)
+    X = np.delete(X, del_x, axis=1)
+    X0 = np.delete(X0, del_x, axis=1)
+    print ('Deleted', len(del_x), 'features')
     
     from kde_ebm.mixture_model import fit_all_gmm_models, get_prob_mat
     from kde_ebm.plotting import plotting
     mixtures = fit_all_gmm_models(X0, labels)
+    
+    #FIXME: if we delete voxels then need to add them back in before writing
+    del_m = []
+    for i,m in enumerate(mixtures):
+        if m.theta[1] < tol or m.theta[3] < tol:
+            del_m.append(i)
+    X = np.delete(X, del_m, axis=1)
+    X0 = np.delete(X0, del_m, axis=1)
+    mixtures = np.delete(mixtures, del_m, axis=0)
+    print ('Deleted', len(del_m), 'mixture models')
+
+    n_ppl, n_bms = X.shape[0], X.shape[1]    
+    print ('n_ppl {} n_bms {} num_iters {} step_size {} num_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} num_mc_samples {}'.format(n_ppl, n_bms, num_iters, step_size, num_sinkhorn, temperature, temperature_prior, gumbel_scale, num_mc_samples))
+    print ('unique labels', np.unique(labels, return_counts=True))    
+    params = [to_var(torch.zeros((n_bms, n_bms), requires_grad=True, device=device))]
+    
     if do_plot:    
         fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
     prob_mat = get_prob_mat(X, mixtures)
@@ -430,6 +443,7 @@ if __name__ == "__main__":
     for i in range(len(S_mode)):
         arr = np.zeros(len(S_mode))
         arr[S_mode[:i]] = 1E3
+        arr = np.insert(arr, del_x+del_m, 0)
         arr = np.array([arr.reshape(nx, ny, nz)])
         img = tio.ScalarImage(tensor=torch.tensor(arr))
         if i<10:
