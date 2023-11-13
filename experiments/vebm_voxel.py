@@ -16,6 +16,11 @@ import scipy as sp
 import pandas as pd
 import torchio as tio
 from os import listdir
+#import lap
+#from lapsolver import solve_dense
+
+from kde_ebm.mixture_model import fit_all_gmm_models, get_prob_mat
+from kde_ebm.plotting import plotting
 
 is_cuda = torch.cuda.is_available()
 if is_cuda:
@@ -74,6 +79,8 @@ def vectorised_round_to_perm(P):
     P_hard = np.empty(P.shape)
     for i in range(P.shape[2]):
         row, col = sp.optimize.linear_sum_assignment(-P[:,:,i])
+        #        row, col = solve_dense(-P[:,:,i])
+        #        _, row, col = lap.lapjv(-P[:,:,i])
         P_i = np.zeros((N, N))
         P_i[np.arange(N), col] = 1.0
         P_hard[:,:,i] = P_i
@@ -154,7 +161,7 @@ if __name__ == "__main__":
         pickle_file.close()
     else:
         print ('Reading data...')
-        path = '/home/paww20/data/MyelinAge/'
+        path = '/its/home/paww20/data/MyelinAge/'
         df = pd.read_csv(path+'meta.csv')
         files = [x for x in listdir(path) if not 'csv' in x]
         X, X0, labels = [], [] ,[]
@@ -164,7 +171,10 @@ if __name__ == "__main__":
             img = trf(img)
             trf = tio.CropOrPad((nx, ny, nz))            
             img = trf(img)
-            #            img.plot()
+            #            mask = tio.Mask(masking_method='brain')
+            #            img = mask(img)
+            
+            img.plot()
             #            plt.imshow(img.data.detach().numpy()[0,:,:,10], interpolation='nearest')
             #            plt.show()
             #            X_i = img.data.detach().numpy()[0,:,:,10].ravel()
@@ -184,30 +194,40 @@ if __name__ == "__main__":
         pickle.dump(data, pickle_file)
         pickle_file.close()
 
-    #FIXME: if we delete voxels then need to add them back in before writing
-    del_x = []
-    tol = 1
+    #FIXME: this is not the best way to remove voxels... need to select a reference image / atlas properly
+    del_i = []
     for i in range(X.shape[1]):
-        if (np.mean(X[labels==0][:,i]) < tol and np.mean(X[labels==1][:,i]) < tol and np.std(X[labels==0][:,i]) < tol and
-            np.std(X[labels==1][:,i]) < tol):
-            del_x.append(i)
-    X = np.delete(X, del_x, axis=1)
-    X0 = np.delete(X0, del_x, axis=1)
-    print ('Deleted', len(del_x), 'features')
-    
-    from kde_ebm.mixture_model import fit_all_gmm_models, get_prob_mat
-    from kde_ebm.plotting import plotting
-    mixtures = fit_all_gmm_models(X0, labels)
-    
-    #FIXME: if we delete voxels then need to add them back in before writing
-    del_m = []
+        if X[0,i] == 0: 
+            del_i.append(i)
+    X = np.delete(X, del_i, axis=1)
+    X0 = np.delete(X0, del_i, axis=1)
+    print ('Deleted', len(del_i), 'empty voxels')
+
+    mixture_file = Path('data/zenodo_voxel_mixtures_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.pkl')
+    if False:#mixture_file.is_file():
+        print ('Loading mixtures...')
+        pickle_file = open(mixture_file, 'rb')
+        data = pickle.load(pickle_file)
+        mixtures = data['mixtures']
+        pickle_file.close()
+    else:
+        print ('Fitting mixtures...')
+        mixtures = fit_all_gmm_models(X0, labels)
+        data = {}
+        data['mixtures'] = mixtures
+        pickle_file = open(mixture_file, 'wb')
+        pickle.dump(data, pickle_file)
+        pickle_file.close()
+
+    #FIXME: is this the best way to remove crap mixture models?
+    tol = 1
     for i,m in enumerate(mixtures):
         if m.theta[1] < tol or m.theta[3] < tol:
-            del_m.append(i)
-    X = np.delete(X, del_m, axis=1)
-    X0 = np.delete(X0, del_m, axis=1)
-    mixtures = np.delete(mixtures, del_m, axis=0)
-    print ('Deleted', len(del_m), 'mixture models')
+            del_i.append(i)
+    X = np.delete(X, del_i, axis=1)
+    X0 = np.delete(X0, del_i, axis=1)
+    mixtures = np.delete(mixtures, del_i, axis=0)
+    print ('Deleted', len(del_i), 'bad mixture models and corresponding voxels')
 
     n_ppl, n_bms = X.shape[0], X.shape[1]    
     print ('n_ppl {} n_bms {} num_iters {} step_size {} num_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} num_mc_samples {}'.format(n_ppl, n_bms, num_iters, step_size, num_sinkhorn, temperature, temperature_prior, gumbel_scale, num_mc_samples))
@@ -417,43 +437,58 @@ if __name__ == "__main__":
     #    ax[1].plot(np.linspace(0, t_mcmc, len(list(greedy_likes)+list(mcmc_likes))), list(greedy_likes)+list(mcmc_likes))
     plt.legend()
     """
+
     # Sample from the posterior and show samples
-    n_samples = 100
-#    gumbel_scale = 1.0
-    log_mu_P = params[0]
-    log_mu_P_rep = log_mu_P.unsqueeze(2).repeat(1, 1, n_samples)
-    # sample Gumbel noise
-    gumbel_noise = to_var(vectorised_sample_gumbel(log_mu_P.shape, temperature, n_samples))
-    # add to \mu and scale
-    log_P = (log_mu_P_rep + gumbel_noise * gumbel_scale) / temperature
-    # move \mu closer to Birkhoff polytope
-    log_P = vectorised_sinkhorn_logspace(log_P, num_sinkhorn)
-    # note zero variance
-    P_samples = torch.exp(log_P)
-    P_samples = np.array([x.detach().cpu().numpy() for x in P_samples])
-    # round to permutation matrices
-    P_hard_samples = vectorised_round_to_perm(P_samples)
-    # sequences
-    S_samples = np.einsum('ijk,j->ik', P_hard_samples, np.arange(n_bms)).T
+    #    gumbel_scale = 1.0
+    if gumbel_scale != 0:
+        n_samples = 100
+    else:
+        n_samples = 1
+    S_samples = []
+    #    log_mu_P_rep = log_mu_P.unsqueeze(2).repeat(1, 1, n_samples)
+    for i in range(n_samples):
+        log_mu_P = params[0].cpu()
+        torch.cuda.empty_cache()
+        log_mu_P = log_mu_P.cuda()
+        log_mu_P = log_mu_P.unsqueeze(2).repeat(1, 1, 1)        
+        # sample Gumbel noise
+        gumbel_noise = to_var(vectorised_sample_gumbel(log_mu_P.shape, temperature, 1))
+        # add to \mu and scale
+        log_P = (log_mu_P + gumbel_noise * gumbel_scale) / temperature
+        # move \mu closer to Birkhoff polytope
+        log_P = vectorised_sinkhorn_logspace(log_P, num_sinkhorn)
+        # note zero variance
+        P_samples = torch.exp(log_P)
+        P_samples = np.array([x.detach().cpu().numpy() for x in P_samples])
+        # round to permutation matrices
+        P_hard_samples = vectorised_round_to_perm(P_samples)
+        # sequences
+        S_samples.append(np.einsum('ijk,j->ik', P_hard_samples, np.arange(n_bms)).T)
     S_unique, counts = np.unique(S_samples, axis=0, return_counts=True)
-    #    print (S_unique, counts)
-    S_mode = S_unique[np.argmax(counts)].astype(int)
+    S_mode = S_unique[np.argmax(counts)][0].astype(int)
     print ('VI order', S_mode)
 
+    n_voxels = nx*ny*nz
+    v_events = np.array([i for i in range(n_voxels) if not i in del_i])[S_mode]
     for i in range(len(S_mode)):
-        arr = np.zeros(len(S_mode))
-        arr[S_mode[:i]] = 1E3
-        arr = np.insert(arr, del_x+del_m, 0)
+        #        arr = np.zeros(len(S_mode))
+        #        arr[S_mode[:i]] = 1E3
+        arr = np.zeros(n_voxels)
+        arr[v_events[:i]] = 1E3
         arr = np.array([arr.reshape(nx, ny, nz)])
         img = tio.ScalarImage(tensor=torch.tensor(arr))
         if i<10:
-            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_000'+str(i)+'4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_00000'+str(i)+'_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
         elif i>=10 and i<100:
-            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_00'+str(i)+'4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_0000'+str(i)+'_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
         elif i>=100 and i<1000:
-            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_0'+str(i)+'4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_000'+str(i)+'_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+        elif i>=1000 and i<10000:
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_00'+str(i)+'_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+        elif i>=10000 and i<100000:
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_0'+str(i)+'_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
         else:
-            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_'+str(i)+'4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_'+str(i)+'_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
     
     if do_plot:
         """
