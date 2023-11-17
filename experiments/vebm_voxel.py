@@ -148,10 +148,13 @@ if __name__ == "__main__":
         num_mc_samples = 10
     else:
         num_mc_samples = 1
-    nx, ny, nz = 32, 32, 10
-    data_file = Path('data/zenodo_voxel_data_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.pkl')
+    #    lxyz = 6
+    lxyz = 1
+    #    nx, ny, nz = 32, 32, 20
+    nx, ny, nz = 256, 256, 20
+    data_file = Path('data/zenodo_voxel_data_'+str(lxyz)+'mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.pkl')
 
-    if data_file.is_file():
+    if False:#data_file.is_file():
         print ('Loading data...')
         pickle_file = open(data_file, 'rb')
         data = pickle.load(pickle_file)
@@ -161,24 +164,35 @@ if __name__ == "__main__":
         pickle_file.close()
     else:
         print ('Reading data...')
-        path = '/its/home/paww20/data/MyelinAge/'
+        path = '/home/paww20/data/zenodo/MyelinAge_v2/'
         df = pd.read_csv(path+'meta.csv')
-        files = [x for x in listdir(path) if not 'csv' in x]
+        files = [x for x in listdir(path) if not ('csv' in x or 'atlas' in x)]
         X, X0, labels = [], [] ,[]
         for i,f in enumerate(files):
             img = tio.ScalarImage(path+f+'/t1.nii.gz')
-            trf = tio.Resample((4, 4, 4))
+            #            print (f)
+            #            img.plot()
+            #            transform = tio.RandomAffine()
+            #            img_tf = transform(img)
+            #            img_tf.plot()
+            
+            trf = tio.Resample((lxyz, lxyz, lxyz))
             img = trf(img)
             trf = tio.CropOrPad((nx, ny, nz))            
             img = trf(img)
+            #            img.plot()
+
             #            mask = tio.Mask(masking_method='brain')
             #            img = mask(img)
-            
-            img.plot()
-            #            plt.imshow(img.data.detach().numpy()[0,:,:,10], interpolation='nearest')
+
+            #            img.save('imgs/sim_'+str(seed)+'_00000'+str(i)+'_'+str(lx)+'mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+            #            img.plot()
+
+            #            plt.imshow(img.data.detach().numpy()[0,:,:,10], interpolation='nearest', cmap='Greys')
             #            plt.show()
-            #            X_i = img.data.detach().numpy()[0,:,:,10].ravel()
-            X_i = img.data.detach().numpy().ravel()
+            
+            X_i = img.data.detach().numpy()[0,:,:,10].ravel()
+            #            X_i = img.data.detach().numpy().ravel()
             X.append(X_i)
             X0.append(X_i)
             labels.append(1 if df.iloc[i]['age'] > np.mean(df['age'].values) else 0)
@@ -195,16 +209,16 @@ if __name__ == "__main__":
         pickle_file.close()
 
     #FIXME: this is not the best way to remove voxels... need to select a reference image / atlas properly
-    del_i = []
+    del_v = []
     for i in range(X.shape[1]):
-        if X[0,i] == 0: 
-            del_i.append(i)
-    X = np.delete(X, del_i, axis=1)
-    X0 = np.delete(X0, del_i, axis=1)
-    print ('Deleted', len(del_i), 'empty voxels')
+        if X[3,i] == 0: 
+            del_v.append(i)
+    X = np.delete(X, del_v, axis=1)
+    X0 = np.delete(X0, del_v, axis=1)
+    print ('Deleted', len(del_v), 'empty voxels')
 
     mixture_file = Path('data/zenodo_voxel_mixtures_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.pkl')
-    if False:#mixture_file.is_file():
+    if mixture_file.is_file():
         print ('Loading mixtures...')
         pickle_file = open(mixture_file, 'rb')
         data = pickle.load(pickle_file)
@@ -220,14 +234,15 @@ if __name__ == "__main__":
         pickle_file.close()
 
     #FIXME: is this the best way to remove crap mixture models?
+    del_m = []
     tol = 1
     for i,m in enumerate(mixtures):
         if m.theta[1] < tol or m.theta[3] < tol:
-            del_i.append(i)
-    X = np.delete(X, del_i, axis=1)
-    X0 = np.delete(X0, del_i, axis=1)
-    mixtures = np.delete(mixtures, del_i, axis=0)
-    print ('Deleted', len(del_i), 'bad mixture models and corresponding voxels')
+            del_m.append(i)
+    X = np.delete(X, del_m, axis=1)
+    X0 = np.delete(X0, del_m, axis=1)
+    mixtures = np.delete(mixtures, del_m, axis=0)
+    print ('Deleted', len(del_m), 'bad mixture models and corresponding voxels')
 
     n_ppl, n_bms = X.shape[0], X.shape[1]    
     print ('n_ppl {} n_bms {} num_iters {} step_size {} num_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} num_mc_samples {}'.format(n_ppl, n_bms, num_iters, step_size, num_sinkhorn, temperature, temperature_prior, gumbel_scale, num_mc_samples))
@@ -318,7 +333,6 @@ if __name__ == "__main__":
         # note zero variance
         P = torch.exp(log_P)
         # observation likelihood
-        #        distortion = vectorised_log_likelihood_ebm(P) / num_mc_samples
         distortion = to_var(vectorised_log_likelihood_ebm_logspace(P) / num_mc_samples)
         # KL divergence
         rate = to_var(gumbel_distance(log_mu_P, temperature_prior, temperature))
@@ -448,8 +462,9 @@ if __name__ == "__main__":
     #    log_mu_P_rep = log_mu_P.unsqueeze(2).repeat(1, 1, n_samples)
     for i in range(n_samples):
         log_mu_P = params[0].cpu()
-        torch.cuda.empty_cache()
-        log_mu_P = log_mu_P.cuda()
+        if is_cuda:
+            torch.cuda.empty_cache()
+            log_mu_P = log_mu_P.cuda()
         log_mu_P = log_mu_P.unsqueeze(2).repeat(1, 1, 1)        
         # sample Gumbel noise
         gumbel_noise = to_var(vectorised_sample_gumbel(log_mu_P.shape, temperature, 1))
@@ -469,6 +484,7 @@ if __name__ == "__main__":
     print ('VI order', S_mode)
 
     n_voxels = nx*ny*nz
+    del_i = del_v + del_m
     v_events = np.array([i for i in range(n_voxels) if not i in del_i])[S_mode]
     for i in range(len(S_mode)):
         #        arr = np.zeros(len(S_mode))
@@ -478,17 +494,17 @@ if __name__ == "__main__":
         arr = np.array([arr.reshape(nx, ny, nz)])
         img = tio.ScalarImage(tensor=torch.tensor(arr))
         if i<10:
-            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_00000'+str(i)+'_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_00000'+str(i)+'_'+str(lxyz)+'mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
         elif i>=10 and i<100:
-            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_0000'+str(i)+'_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_0000'+str(i)+'_'+str(lxyz)+'mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
         elif i>=100 and i<1000:
-            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_000'+str(i)+'_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_000'+str(i)+'_'+str(lxyz)+'mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
         elif i>=1000 and i<10000:
-            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_00'+str(i)+'_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_00'+str(i)+'_'+str(lxyz)+'mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
         elif i>=10000 and i<100000:
-            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_0'+str(i)+'_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_0'+str(i)+'_'+str(lxyz)+'mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
         else:
-            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_'+str(i)+'_4mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
+            img.save('imgs/sim_'+str(seed)+'_vi_imgseq_'+str(i)+'_'+str(lxyz)+'mm_nx_'+str(nx)+'_ny_'+str(ny)+'_nz_'+str(nz)+'.nii.gz')
     
     if do_plot:
         """
