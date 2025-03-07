@@ -5,6 +5,10 @@ If you use the vEBM please cite this paper:
 
 Wijeratne & Alexander (2024). "Unscrambling disease progression at scale: fast inference of event permutations with optimal transport". Advances in Neural Information Processing Systems. <https://doi.org/10.48550/arXiv.2410.14388>
 
-Here is a demonstration of the vEBM using structural magnetic resonance imaging (MRI) data from the Alzheimer's Disease Neuroimaging Initiative (ADNI) dataset. It shows pixel-level disease progression events in the brain, providing new fine-grained insights into changes at the tissue-level caused by Alzheimer's disease. Training this model took only 5 minutes on a single laptop CPU.
+# Example
+
+Here we apply the vEBM to structural magnetic resonance imaging (MRI) data from the Alzheimer's Disease Neuroimaging Initiative (ADNI) dataset. It shows pixel-level disease progression events in the brain, providing new fine-grained insights into changes at the tissue-level caused by Alzheimer's disease. 
+
+Training this model took only 5 minutes on a single laptop CPU.
 
 ![](https://github.com/pawij/vebm/blob/main/adni_vebm.gif)
