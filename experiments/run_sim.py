@@ -29,9 +29,9 @@ if __name__ == "__main__":
     n_bms = 10#1344
     n_obs = 1
     # FIXME: systematically test dependency on these hyperparameters
-    n_iters = 200
+    n_iters = 100
     step_size = 1E-1#1E-6
-    n_sinkhorn = 10
+    n_sinkhorn = 20
     temperature = 1E0# need to optimise this hyperparameter; higher powers can do better at high noise
     temperature_prior = 1E0
     gumbel_scale = 0#1E-9
@@ -88,6 +88,7 @@ if __name__ == "__main__":
     print("Variational inference for matching...")
     # FIXME: why does adam work so much better than sgd?
     vebm = VEBM(X=X0,
+                labels=labels,
                 S_prior=None,
                 n_sinkhorn=n_sinkhorn,
                 temperature=temperature,
@@ -138,19 +139,19 @@ if __name__ == "__main__":
         plt.tight_layout()
     # Sample from the posterior and show samples
     # note that we don't vectorise here for memory reasons
-    log_mu_P = params[0]
+    log_mu_P = vebm.params[0]
     #    print ('log_mu_P',log_mu_P)
 
     ### point estimate of sequence (zero Gumbel noise)
     # add to \mu and scale
     log_P = (log_mu_P) / temperature
     # move \mu closer to Birkhoff polytope
-    log_P = sinkhorn_logspace(log_P, n_sinkhorn)
+    log_P = vebm.sinkhorn_logspace(log_P, n_sinkhorn)
     # note zero variance
     P_sample = torch.exp(log_P)
     P_sample = np.array([x.detach().cpu().numpy() for x in P_sample])
     # round to permutation matrices
-    P_hard_sample = round_to_perm(P_sample[0])
+    P_hard_sample = vebm.round_to_perm(P_sample[0])
     S_point = np.einsum('i,ij->j', np.arange(n_bms), P_hard_sample)
 
     ### distribution of sequences (non-zero Gumbel noise)
@@ -163,11 +164,11 @@ if __name__ == "__main__":
     #    t_start = time.time()
     for i in range(n_samples):
         # sample Gumbel noise
-        gumbel_noise = to_var(sample_gumbel(log_mu_P.shape, temperature)[0])
+        gumbel_noise = vebm.to_var(vebm.vectorised_sample_gumbel(log_mu_P.shape)[0])
         # add to \mu and scale
         log_P = (log_mu_P + gumbel_noise * gumbel_scale) / temperature
         # move \mu closer to Birkhoff polytope
-        log_P = sinkhorn_logspace(log_P, n_sinkhorn)
+        log_P = vebm.sinkhorn_logspace(log_P, n_sinkhorn)
         # note zero variance
         P_sample = torch.exp(log_P)
         #        print ('P_sample', P_sample)
@@ -176,7 +177,7 @@ if __name__ == "__main__":
         #        fig, ax = plt.subplots()
         #        ax.imshow(P_sample[0], interpolation='nearest', cmap='gray_r')
         # round to permutation matrices
-        P_hard_sample = round_to_perm(P_sample[0])
+        P_hard_sample = vebm.round_to_perm(P_sample[0])
         #        print ('P_hard_sample', P_hard_sample)
         # sequences
         #        S_samples.append(np.einsum('ij,j->i', P_hard_sample, np.arange(n_bms).T))
@@ -206,6 +207,8 @@ if __name__ == "__main__":
     else:
         pcorr_vi = np.nan
     print ('pcorr_vi', pcorr_vi)
+
+    do_plot = True
 
     if do_plot:
         """
@@ -288,9 +291,6 @@ if __name__ == "__main__":
         for i in range(n_param):
             ax.flat[i].hist(np.random.normal(log_mu_P_post.flatten()[i], sigma_post.flatten()[i], 1000))
             ax.flat[i].set_xlim(-10,10)
-    """
-    data_out = np.array([t_vi, kt_vi[0]])
-    np.savetxt('sim_out/sim'+str(seed)+'_i_'+str(n_ppl)+'_j_'+str(n_bms)+'_sigma_'+str(data_noise)+'_vi.csv', data_out, delimiter=',')
-        
+    """        
     if do_plot:
         plt.show()
