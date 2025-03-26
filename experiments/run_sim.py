@@ -9,151 +9,42 @@ from pathlib import Path
 import pickle
 import torch
 from torch import logsumexp
-import autograd.numpy as np
-import autograd.numpy.random as npr
+import numpy as np
+#import autograd.numpy as np
+#import autograd.numpy.random as npr
 from autograd.scipy.special import gammaln
 import scipy as sp
 
-#from memory_profiler import profile
-
-is_cuda = torch.cuda.is_available()
-if is_cuda:
-    device = 'cuda'
-    dtype = torch.float32
-else:
-    device = 'cpu'
-    dtype = torch.float64
-torch.set_default_dtype(dtype)
-eps = torch.finfo(dtype).eps
-
-def to_var(x):
-    if is_cuda:
-        x = x.cuda()
-    return x
+from vebm import VEBM
 
 try:
     seed = int(sys.argv[1])
 except IndexError:
     seed = 42
-npr.seed(seed)
-
-def unconstrained_log_prior(P, sigmasq):
-    """
-    Consider a product (coordinate-wise) of mixtures of
-    two gaussians with std sigma_prior and centers at 0 and 1)
-    """
-    N = P.shape[0]
-    assert P.shape == (N, N)
-    corners = np.array([0, 1])
-    diffs = P[:,:,None] - corners[None, None, :]
-    return np.sum(logsumexp(-0.5 * diffs ** 2 / sigmasq, axis=2)) \
-        - 0.5 * N**2 * np.log(2 * np.pi) \
-        - 0.5 * N**2 * np.log(sigmasq)
-
-def perm_to_P(perm):
-    K = len(perm)
-    P = np.zeros((K, K))
-    P[np.arange(K), perm] = 1
-    return P
-
-def round_to_perm(P):
-    N = P.shape[0]
-    assert P.shape == (N, N)
-    try:
-        row, col = sp.optimize.linear_sum_assignment(-P)
-    except:
-        col = linear_sum_assignment_wrapper(-P)
-    P = np.zeros((N, N))
-    #    P[row, col] = 1.0
-    P[np.arange(N), col] = 1.0
-    return P
-
-def vectorised_round_to_perm(P):
-    N = P.shape[0]
-    P_hard = np.empty(P.shape)
-    for i in range(P.shape[2]):
-        row, col = sp.optimize.linear_sum_assignment(-P[:,:,i])
-        P_i = np.zeros((N, N))
-        P_i[np.arange(N), col] = 1.0
-        P_hard[:,:,i] = P_i
-    return P_hard
-
-# Set up the log probability objective
-# Assume a uniform prior on P?
-
-def log_likelihood_ebm(P):
-    k = prob_mat.shape[1]+1
-    P_T = torch.permute(P, (1,0))
-    p_perm_k = torch.zeros((prob_mat.shape[0], k))
-    cp_yes = torch.cumprod(torch.mm(prob_mat[:, :, 1], P_T), 1)
-    cp_no = torch.cumprod(torch.mm(prob_mat[:, :, 0], torch.flip(P_T, [1])), 1)
-    p_perm_k[:, 0] = cp_no[:, -1]
-    p_perm_k[:, 1:-1] = torch.flip(cp_no[:, :-1], [1]) * cp_yes[:, :-1]
-    p_perm_k[:, -1] = cp_yes[:, -1]
-    return torch.sum(torch.log(torch.sum(p_perm_k, 1)+1e-250))
-
-def vectorised_log_likelihood_ebm(P):
-    k = prob_mat.shape[1]+1
-    P_T = torch.permute(P, (1,0,2))
-    p_perm_k = torch.zeros((prob_mat.shape[0], k, P.shape[2]))
-    cp_yes = torch.cumprod(torch.einsum('ij,jkl->ikl', prob_mat[:, :, 1], P_T), axis=1)
-    cp_no = torch.cumprod(torch.einsum('ij,jkl->ikl', prob_mat[:, :, 0], torch.flip(P_T, [1])), axis=1)
-    p_perm_k[:, 0, :] = cp_no[:, -1, :]
-    p_perm_k[:, 1:-1, :] = torch.einsum('ijk,ijk->ijk', torch.flip(cp_no[:, :-1, :], [1]), cp_yes[:, :-1, :])
-    p_perm_k[:, -1, :] = cp_yes[:, -1, :]
-    return torch.sum(torch.sum(torch.log(torch.sum(p_perm_k, axis=1) + eps), axis=0))
-
-def flip(x):
-    return x[:, torch.tensor([i for i in range(x.shape[1])][::-1],device=device), :]
-
-# note we omit the uniform prior over k
-#@profile
-def vectorised_log_likelihood_ebm_logspace(P):
-    k = prob_mat.shape[1]+1
-    P_T = P#torch.permute(P, (1,0,2))
-    logp_k = torch.log(torch.tensor(1/k))
-    logp_perm_k = torch.zeros((prob_mat.shape[0], k, P.shape[2]))
-    p_yes = torch.einsum('ij,jkl->ikl', prob_mat[:, :, 1], P_T)
-    p_yes[p_yes == 0] = eps
-    p_no = torch.einsum('ij,jkl->ikl', prob_mat[:, :, 0], torch.flip(P_T, [1]))
-    #    p_no = torch.einsum('ij,jkl->ikl', prob_mat[:, :, 0], flip(P_T))
-    p_no[p_no == 0] = eps
-    logp_yes = torch.log(p_yes)
-    logp_no = torch.log(p_no)
-    logcp_yes = torch.cumsum(logp_yes, axis=1)
-    logcp_no = torch.cumsum(logp_no, axis=1)
-    logp_perm_k[:, 0, :] = logcp_no[:, -1, :]
-    logp_perm_k[:, 1:-1, :] = torch.flip(logcp_no[:, :-1, :], [1]) + logcp_yes[:, :-1, :]
-    #    logp_perm_k[:, 1:-1, :] = flip(logcp_no[:, :-1, :]) + logcp_yes[:, :-1, :]
-    logp_perm_k[:, -1, :] = logcp_yes[:, -1, :]
-    logp_perm = logsumexp(logp_perm_k, axis=1)
-    return torch.sum(logp_perm)
+np.random.seed(seed)
 
 if __name__ == "__main__":
-
-    do_plot = 1
 
     n_ppl = 100#816
     n_bms = 10#1344
     n_obs = 1
     # FIXME: systematically test dependency on these hyperparameters
-    num_iters = 200
+    n_iters = 200
     step_size = 1E-1#1E-6
-    num_sinkhorn = 10
+    n_sinkhorn = 10
     temperature = 1E0# need to optimise this hyperparameter; higher powers can do better at high noise
     temperature_prior = 1E0
     gumbel_scale = 0#1E-9
     sigmasq_prior = 1.
     if gumbel_scale > 0:
-        num_mc_samples = 20
+        n_mc_samples = 20
     else:
-        num_mc_samples = 1
+        n_mc_samples = 1
     data_noise = 1.0
-    print ('n_ppl {} n_bms {} num_iters {} step_size {} num_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} num_mc_samples {} data_noise {}'.format(n_ppl, n_bms, num_iters, step_size, num_sinkhorn, temperature, temperature_prior, gumbel_scale, num_mc_samples, data_noise))
+    print ('n_ppl {} n_bms {} n_iters {} step_size {} n_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} n_mc_samples {} data_noise {}'.format(n_ppl, n_bms, n_iters, step_size, n_sinkhorn, temperature, temperature_prior, gumbel_scale, n_mc_samples, data_noise))
     
-    params = [to_var(torch.zeros((n_bms, n_bms), requires_grad=True, device=device))]
-    seq_true = np.array([npr.permutation(n_bms)])
-    
+    #    seq_true = np.array([npr.permutation(n_bms)])
+    seq_true = np.array([np.random.permutation(n_bms)])    
     from sim_funcs import gen_data
     model_type = 'GMM'#'Zscore'
     if model_type=='GMM':
@@ -191,231 +82,57 @@ if __name__ == "__main__":
         pickle.dump(data, pickle_file)
         pickle_file.close()
         seq_true = seq_true[0]
-
     print ('labels', np.unique(labels, return_counts=True))
-    from kde_ebm.mixture_model import fit_all_gmm_models, get_prob_mat
-    from kde_ebm.plotting import plotting
-    mixtures = fit_all_gmm_models(X0, labels)
 
-    fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
-    print (mixtures)
-    for i in range(len(mixtures)):
-        print (mixtures[i].theta)
-    from sklearn.mixture import GaussianMixture as gmm
-    # sklearn.mixture.GaussianMixture(n_components=1, *, covariance_type='full', tol=0.001, reg_covar=1e-06, max_iter=100, n_init=1, init_params='kmeans', weights_init=None, means_init=None, precisions_init=None, random_state=None, warm_start=False, verbose=0, verbose_interval=10)
-    def fit_all_gmms(X, y):
-        n_particp, n_biomarkers = X.shape
-        mixture_models = []
-        for i in range(n_biomarkers):
-            bio_y = y[~np.isnan(X[:, i])]
-            bio_X = X[~np.isnan(X[:, i]), i]
-            mm = gmm(n_components=2, covariance_type='diag', tol=1E-2, n_init=20, means_init=np.array([np.nanmean(bio_X[bio_y==0]), np.nanmean(bio_X[bio_y==1])]).reshape(2,1))#, precisions_init=np.array([1/np.nanstd(bio_X[bio_y==0]), 1/np.nanstd(bio_X[bio_y==1])]).reshape(2,1), weights_init=np.array([0.5,0.5]))
-            mm.fit(bio_X.reshape(-1, 1))
-            print (mm.n_iter_)
-            mixture_models.append(mm)
-        return mixture_models    
-    thetas = fit_all_gmms(X0, labels)
-    mixtures = []
-    from kde_ebm.distributions.gaussian import Gaussian
-    from kde_ebm.mixture_model.gmm import ParametricMM
-    for i in range(len(thetas)):
-        g0 = Gaussian()
-        g1 = Gaussian()
-        mm = ParametricMM(g0, g1)
-        #        mm.theta = np.array([thetas[i].means_[0][0], thetas[i].covariances_[0], thetas[i].means_[1][0], thetas[i].covariances_[1], thetas[i].weights_[0]])
-        mm.theta = np.array([thetas[i].means_[0][0], thetas[i].covariances_[0][0], thetas[i].means_[1][0], thetas[i].covariances_[1][0], thetas[i].weights_[1]])
-        mixtures.append(mm)
-        print (mm.theta)
-    print (mixtures)
-    fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
-    plt.show()
-    quit()
-    
-    if do_plot:    
-        fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
-    prob_mat = get_prob_mat(X, mixtures)
-    for row in prob_mat:
-        if np.any(np.isnan(row)):
-            print ('nan in prob_mat!')
-            #FIXME: hack
-            #            row[np.isnan(row)] = 0.5
-
-    P_true = np.zeros((n_bms, n_bms))
-    P_true[np.arange(n_bms), seq_true.astype(int)] = 1
-        
-
-    # convert prob_mat to torch
-    prob_mat = to_var(torch.tensor(prob_mat, dtype=dtype))
-    
-    # Build variational objective.
-    def sinkhorn_logspace(logP, n_iters=10):
-        n = logP.size()[1]
-        logP = logP.view(-1, n, n)
-        for i in range(n_iters):
-            logP = logP - (logsumexp(logP, dim=2, keepdim=True)).view(-1, n, 1)
-            logP = logP - (logsumexp(logP, dim=1, keepdim=True)).view(-1, 1, n)
-        return logP
-
-    def vectorised_sinkhorn_logspace(logP, n_iters=10):
-        n = logP.size()[1]
-        logP = logP.view(n, n, -1)
-        for i in range(n_iters):
-            logP = logP - (logsumexp(logP, dim=1, keepdim=True)).view(n, 1, -1)
-            logP = logP - (logsumexp(logP, dim=0, keepdim=True)).view(1, n, -1)
-        return logP
-
-    def sample_gumbel(a, temperature, n=1, eps=1E-20):
-        return -torch.log(-torch.log(torch.rand((n, a[0], a[1])) + eps) + eps)
-
-    def vectorised_sample_gumbel(a, temperature, n=1, eps=1E-20):
-        return -torch.log(-torch.log(torch.rand((a[0], a[1], n)) + eps) + eps)
-
-    def gumbel_distance(log_mu_P, temperature_prior, temperature):
-        #FIXME: check
-        arr = torch.sum(np.log(temperature_prior) - 0.5772156649 * temperature_prior / temperature -
-                        log_mu_P * temperature_prior / temperature -
-                        torch.exp(gammaln(1 + temperature_prior / temperature) - log_mu_P * temperature_prior / temperature)
-                        - (np.log(temperature) - 1 - 0.5772156649))
-        return arr
-    
-    def variational_objective(params, return_dr=False):
-        """Provides a stochastic estimate of the variational lower bound."""
-        log_mu_P = params[0]
-        # vectorise \mu for number of MC samples
-        log_mu_P_rep = log_mu_P.unsqueeze(2).repeat(1, 1, num_mc_samples)
-        # sample Gumbel noise
-        gumbel_noise = to_var(vectorised_sample_gumbel(log_mu_P.shape, temperature, num_mc_samples))
-        # add to \mu and scale
-        log_P = (log_mu_P_rep + gumbel_noise * gumbel_scale) / temperature
-        # move \mu closer to Birkhoff polytope
-        log_P = vectorised_sinkhorn_logspace(log_P, num_sinkhorn)
-        # note zero variance
-        P = torch.exp(log_P)
-        # observation likelihood
-        #        distortion = vectorised_log_likelihood_ebm(P) / num_mc_samples
-        distortion = to_var(vectorised_log_likelihood_ebm_logspace(P) / num_mc_samples)
-        # KL divergence
-        rate = to_var(gumbel_distance(log_mu_P, temperature_prior, temperature))
-        # entropy term for \mu?
-        if return_dr:
-            return -(distortion + rate), distortion, rate
-        else:
-            return -(distortion + rate)
-    
-    elbos, sigmas_mean, means_mean, rates, distortions, kt_vi_iter, num_corrects, frac_correct_mean = [], [], [], [], [], [], [], []
-
-    ### Plotting
-    """
-    if do_plot:
-        fig = plt.figure(figsize=(8, 4), facecolor='white')
-        ax1 = fig.add_subplot(121, frameon=True)
-        ax2 = fig.add_subplot(122, frameon=True)
-        plt.ion()
-        plt.show(block=False)
-    """
-    def plot_permutation(ax1, ax2, P):
-        ax1.imshow(P_true, interpolation="none", vmin=0, vmax=1)
-        ax1.set_title("True $\Pi$")
-        ax2.imshow(P, interpolation="none", vmin=0, vmax=1)
-        ax2.set_title("Inferred $g(\mu)$")
-
-    def n_correct(P1,P2):
-        return P1.shape[0] - np.sum(np.abs(P1-P2))/2.0
-
-    def callback(params, t, g):
-        elbo, distortion, rate = variational_objective(params, t, return_dr=True)
-        elbos.append(-elbo)
-        distortions.append(distortion)
-        rates.append(rate)
-        print("Iteration {} lower bound {}".format(t, elbos[-1]))
-        
-        log_mu_P, log_sigmasq_P = unpack_params(params)
-        sigma = np.sqrt(np.exp(log_sigmasq_P))
-        print("log_mu_P min: ", log_mu_P.min(), "\t log_mu_P max: ", log_mu_P.max(), "\t log_mu_P mean: ", log_mu_P.mean())
-        print("sigma min: ", sigma.min(), "\t sigma max: ", sigma.max(), "\t sigma mean: ", sigma.mean())
-
-        num_correct_mc = []
-        for i in range(num_mc_samples):
-            P_sample = (log_mu_P + sample_gumbel(log_mu_P.shape, temperature)[0] * gumbel_scale) / temperature
-            P_sample = sinkhorn_logspace(P_sample, num_sinkhorn)
-            ##Notice how we limit the variance
-            P_sample = torch.exp(P_sample)
-            # Round doubly stochastic matrix P to the nearest permutation matrix
-            row, col = torch.linear_sum_assignment(-P_sample)
-            num_correct = n_correct(perm_to_P(col.detach().cpu().numpy()), P_true)
-            num_correct_mc.append(num_correct)
-        frac_correct_mean.append(np.mean([x/n_bms for x in num_correct_mc]))
-        print ('frac_correct',np.mean([x/n_bms for x in num_correct_mc]), np.std([x/n_bms for x in num_correct_mc]),' chance ',1/n_bms)
-
-        
-        #        print (np.dot(perm_to_P(col), np.arange(n_bms)))
-
-        sigmas_mean.append(sigma.mean())
-        means_mean.append(log_mu_P.mean())
-        
-        if ctrlc_pressed[0]:
-            sys.exit()
-
-    # Check for quit
-    ctrlc_pressed = [False]
-    def ctrlc_handler(signal, frame):
-        print("Halting due to Ctrl-C")
-        ctrlc_pressed[0] = True
-    signal.signal(signal.SIGINT, ctrlc_handler)
-
+    elbos, sigmas_mean, means_mean, rates, distortions, kt_vi_iter, n_corrects, frac_correct_mean = [], [], [], [], [], [], [], []
     print("Variational inference for matching...")
-    t_start = time.time()
     # FIXME: why does adam work so much better than sgd?
-    optimizer = torch.optim.Adam(params, lr=step_size, eps=eps)
-    for i in range(num_iters):
-        # Training phase
-        #        model.train()
-        optimizer.zero_grad()
-        loss = variational_objective(params)
-        #        print (loss)
-        loss.backward()
-        optimizer.step()
-    
-    t_vi = time.time()-t_start
-    print ('after VI', t_vi)
-    # fig.savefig("permutation_K20.png")
-
+    vebm = VEBM(X=X0,
+                S_prior=None,
+                n_sinkhorn=n_sinkhorn,
+                temperature=temperature,
+                temperature_prior=temperature_prior,
+                gumbel_scale=gumbel_scale,
+                n_mc_samples=n_mc_samples,
+                n_iters=n_iters,
+                step_size=step_size)
+    vebm.train()
     # Plot the elbo
     # FIXME: these plots need arrays filled in callback function
     if False:#do_plot:
         plt.figure(figsize=(6,4))
         plt.plot(elbos)
-        plt.xlim(0, num_iters)
+        plt.xlim(0, n_iters)
         plt.xlabel("Iteration")
         plt.ylabel("ELBO")
         plt.tight_layout()
         plt.figure(figsize=(6,4))
         plt.plot(sigmas_mean)
-        plt.xlim(0, num_iters)
+        plt.xlim(0, n_iters)
         plt.xlabel("Iteration")
         plt.ylabel("sigmas_mean")
         plt.tight_layout()
         plt.figure(figsize=(6,4))
         plt.plot(means_mean)
-        plt.xlim(0, num_iters)
+        plt.xlim(0, n_iters)
         plt.xlabel("Iteration")
         plt.ylabel("means_mean")
         plt.tight_layout()
         plt.figure(figsize=(6,4))
         plt.plot(distortions)
-        plt.xlim(0, num_iters)
+        plt.xlim(0, n_iters)
         plt.xlabel("Iteration")
         plt.ylabel("distortions")
         plt.tight_layout()
         plt.figure(figsize=(6,4))        
         plt.plot(rates)
-        plt.xlim(0, num_iters)
+        plt.xlim(0, n_iters)
         plt.xlabel("Iteration")
         plt.ylabel("rates")
         plt.tight_layout()
         plt.figure(figsize=(6,4))
         plt.plot(frac_correct_mean)
-        plt.xlim(0, num_iters)
+        plt.xlim(0, n_iters)
         plt.xlabel("Iteration")
         plt.ylabel("frac_correct_mean")
         plt.tight_layout()
@@ -428,7 +145,7 @@ if __name__ == "__main__":
     # add to \mu and scale
     log_P = (log_mu_P) / temperature
     # move \mu closer to Birkhoff polytope
-    log_P = sinkhorn_logspace(log_P, num_sinkhorn)
+    log_P = sinkhorn_logspace(log_P, n_sinkhorn)
     # note zero variance
     P_sample = torch.exp(log_P)
     P_sample = np.array([x.detach().cpu().numpy() for x in P_sample])
@@ -450,7 +167,7 @@ if __name__ == "__main__":
         # add to \mu and scale
         log_P = (log_mu_P + gumbel_noise * gumbel_scale) / temperature
         # move \mu closer to Birkhoff polytope
-        log_P = sinkhorn_logspace(log_P, num_sinkhorn)
+        log_P = sinkhorn_logspace(log_P, n_sinkhorn)
         # note zero variance
         P_sample = torch.exp(log_P)
         #        print ('P_sample', P_sample)
