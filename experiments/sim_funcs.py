@@ -258,10 +258,10 @@ def gen_data(n_subtypes,
     # choose which subjects will be cases and which will be controls
     #    MIN_CASE_STAGE = np.round((n_bms + 1) * 0.9)
     #    index_case = np.where(stages_0 >=  MIN_CASE_STAGE)[0]
-    index_case = np.where(stages_0 > (n_bms-1))[0]
-    #    index_case = np.where(stages_0 > round(n_bms*0.95))[0]
-    index_control = np.where(stages_0 < 1)[0]
-    #    index_control = np.where(stages_0 < round(n_bms*0.05))[0]
+    #    index_case = np.where(stages_0 > (n_bms-1))[0]
+    index_case = np.where(stages_0 > round(n_bms*0.8))[0]
+    #    index_control = np.where(stages_0 < 1)[0]
+    index_control = np.where(stages_0 < round(n_bms*0.2))[0]
     labels = 2 * np.ones(n_ppl, dtype=int) # 2 - intermediate value, not used in mixture model fitting
     labels[index_case] = 1 # 1 - cases
     labels[index_control] = 0 # 0 - controls

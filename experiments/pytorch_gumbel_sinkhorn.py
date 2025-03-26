@@ -14,16 +14,15 @@ import autograd.numpy.random as npr
 from autograd.scipy.special import gammaln
 import scipy as sp
 
-is_cuda = torch.cuda.is_available()
+is_cuda = False#torch.cuda.is_available()
 if is_cuda:
     device = 'cuda'
-    torch.set_default_dtype(torch.float32)
-    eps = torch.finfo(torch.float32).eps
+    dtype = torch.float32
 else:
     device = 'cpu'
-    torch.set_default_dtype(torch.float64)
-    eps = torch.finfo(torch.float64).eps
-
+    dtype = torch.float64
+torch.set_default_dtype(dtype)
+eps = torch.finfo(dtype).eps
 def to_var(x):
     if is_cuda:
         x = x.cuda()
@@ -124,21 +123,21 @@ def vectorised_log_likelihood_ebm_logspace(P):
 if __name__ == "__main__":
 
     do_mcmc = 0
-    do_plot = 0
+    do_plot = 1
 
-    n_ppl = 10000#2000
-    n_bms = 10000#4096
+    n_ppl = 100#2000
+    n_bms = 1000#4096
     n_obs = 1
     # FIXME: systematically test dependency on these hyperparameters
     num_iters = 100
     step_size = 1E-1
-    num_sinkhorn = 10
-    temperature = 1.# need to optimise this hyperparameter; higher powers can do better at high noise
-    temperature_prior = 1.
-    gumbel_scale = .0
+    num_sinkhorn = 40
+    temperature = 1E1# need to optimise this hyperparameter; higher powers can do better at high noise
+    temperature_prior = 1E0
+    gumbel_scale = .01
     sigmasq_prior = 1.
     if gumbel_scale > 0:
-        num_mc_samples = 10
+        num_mc_samples = 100
     else:
         num_mc_samples = 1
     data_noise = 0.1
@@ -189,7 +188,7 @@ if __name__ == "__main__":
     from kde_ebm.mixture_model import fit_all_gmm_models, get_prob_mat
     from kde_ebm.plotting import plotting
     mixtures = fit_all_gmm_models(X0, labels)
-    if do_plot:    
+    if False:#do_plot:    
         fig, ax = plotting.mixture_model_grid(X0, labels, mixtures, np.arange(X0.shape[1]))
     prob_mat = get_prob_mat(X, mixtures)
     for row in prob_mat:
@@ -234,7 +233,7 @@ if __name__ == "__main__":
         print ('frac_correct', np.sum(ebm_order.ordering==seq_true)/n_bms, ' chance ', 1/n_bms)
 
     # convert prob_mat to torch
-    prob_mat = to_var(torch.tensor(prob_mat, dtype=torch.float32))
+    prob_mat = to_var(torch.tensor(prob_mat, dtype=dtype))
     
     # Build variational objective.
     def sinkhorn_logspace(logP, n_iters=10):
@@ -370,7 +369,7 @@ if __name__ == "__main__":
     # fig.savefig("permutation_K20.png")
 
     # Plot the elbo
-    if do_plot:
+    if False:#do_plot:
         plt.figure(figsize=(6,4))
         plt.plot(elbos)
         plt.xlim(0, num_iters)
@@ -471,6 +470,7 @@ if __name__ == "__main__":
         ax.set_xlabel('Event')
         ax.set_title('Inferred P_soft')
         """
+        """
         fig, ax = plt.subplots()
         plt.gca().invert_yaxis()
         ax.scatter(np.mean(S_samples, axis=0), np.arange(n_bms))
@@ -491,7 +491,7 @@ if __name__ == "__main__":
             [l.set_visible(False) for (i,l) in enumerate(ax.xaxis.get_ticklabels()) if i % 100 != 0]
             [l.set_visible(False) for (i,l) in enumerate(ax.yaxis.get_ticklabels()) if i % 100 != 0]
         plt.subplots_adjust(bottom=0.1, top=0.95)
-
+        """
         fig, ax = plt.subplots(figsize=(8, 6))
         ax.imshow(confusion_mat, interpolation='nearest', cmap='gray_r', label='vEBM')
         ax.set_xticks(np.arange(n_bms))
