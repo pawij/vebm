@@ -1,9 +1,0 @@
-setup.py
-src/vebm/__init__.py
-src/vebm/vebm.py
-src/vebm.egg-info/PKG-INFO
-src/vebm.egg-info/SOURCES.txt
-src/vebm.egg-info/dependency_links.txt
-src/vebm.egg-info/not-zip-safe
-src/vebm.egg-info/requires.txt
-src/vebm.egg-info/top_level.txt
