@@ -175,7 +175,7 @@ class VEBM(BaseEstimator):
             loss.backward()
             optimizer.step()
 
-        def perm_to_P(self, perm):
+    def perm_to_P(self, perm):
         K = len(perm)
         P = np.zeros((K, K))
         P[np.arange(K), perm] = 1
