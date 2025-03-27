@@ -1,3 +1,5 @@
+# author: Peter Wijeratne (p.wijeratne@pm.me)
+# example VEBM training on simulated data
 import sys
 import numpy as np
 import pickle
@@ -16,36 +18,30 @@ np.random.seed(seed)
 if __name__ == "__main__":
     
     # model parameters
-    n_sinkhorn = 20
-    temperature = 1E0
-    temperature_prior = 1E0
-    gumbel_scale = 0
+    n_sinkhorn = 20 # number of Sinkhorn-Knopp iterations
+    temperature = 1E0 # temperature hyperparameter
+    temperature_prior = 1E0 # temperature prior hyperparameter
+    gumbel_scale = 0 # Gumbel noise hyperparameter
     if gumbel_scale > 0:
-        n_mc_samples = 20
+        n_mc_samples = 100 # number of Monte Carlo samples
     else:
         n_mc_samples = 1
-    n_iters = 100
-    step_size = 1E-1
+    n_iters = 100 # number of ADAM iterations
+    step_size = 1E-1 # step size for ADAM
         
     # simulate data
-    n_ppl = 100
-    n_fts = 10
-    n_obs = 1
-    sigma_noise = 1.0
-    sim_file = Path('simdata'+str(seed)+'_n_ppl_'+str(n_ppl)+'_n_fts_'+str(n_fts)+'_sigma_noise_'+str(sigma_noise)+'.csv')    
+    n_ppl = 100 # number of individuals
+    n_fts = 10 # number of features
+    n_obs = 1 # number of observations per individual
+    sigma_noise = 1.0 # standard deviation of noise
+    
     print ('Generating simulated data...')
-    X, lengths, jumps, labels, X0, stages_true, times, seq_true, Q, pi0, _ = gen_data(n_ppl, n_fts, n_obs, sigma_noise)
-    data = {}
-    data['X'] = X
-    data['labels'] = labels
-    data['X0'] = X0
-    data['seq_true'] = seq_true
-    pickle_file = open(sim_file, 'wb')
-    pickle.dump(data, pickle_file)
-    pickle_file.close()
-    seq_true = seq_true[0]        
+    # X is observed data for each individual and each observation: shape (n_ppl, n_features, n_obs)
+    # X0 is the first observation for each individual only: shape (n_ppl, n_features)
+    # labels is the control ("con") or case ("case") labels: shape (n_ppl)
+    # seq_true is the true simulated sequence, used for post-hoc comparison: shape (n_fts+1)
+    X, _, _, labels, X0, _, _, seq_true, _, _, _ = gen_data(n_ppl, n_fts, n_obs, sigma_noise)
     print ('n_ppl {} n_fts {} n_iters {} step_size {} n_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} n_mc_samples {} sigma_noise {}'.format(n_ppl, n_fts, n_iters, step_size, n_sinkhorn, temperature, temperature_prior, gumbel_scale, n_mc_samples, sigma_noise))
-    print ('unique labels', np.unique(labels, return_counts=True))
     
     # run model
     print("Variational inference for matching...")

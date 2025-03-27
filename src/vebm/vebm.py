@@ -1,3 +1,5 @@
+# author: Peter Wijeratne (p.wijeratne@pm.me)
+# VEBM class
 import numpy as np
 import scipy as sp
 from scipy.special import gammaln
@@ -56,33 +58,6 @@ class VEBM(BaseEstimator):
         if self.is_cuda:
             x = x.cuda()
         return x
-
-    def perm_to_P(self, perm):
-        K = len(perm)
-        P = np.zeros((K, K))
-        P[np.arange(K), perm] = 1
-        return P
-
-    def round_to_perm(self, P):
-        N = P.shape[0]
-        assert P.shape == (N, N)
-        try:
-            row, col = sp.optimize.linear_sum_assignment(-P)
-        except:
-            col = linear_sum_assignment_wrapper(-P)
-        P = np.zeros((N, N))
-        P[np.arange(N), col] = 1.0
-        return P
-
-    def vectorised_round_to_perm(self, P):
-        N = P.shape[0]
-        P_hard = np.empty(P.shape)
-        for i in range(P.shape[2]):
-            row, col = sp.optimize.linear_sum_assignment(-P[:,:,i])
-            P_i = np.zeros((N, N))
-            P_i[np.arange(N), col] = 1.0
-            P_hard[:,:,i] = P_i
-        return P_hard
 
     def vectorised_log_likelihood_ebm_logspace(self, P):
         k = self.prob_mat.shape[1]+1
@@ -199,6 +174,33 @@ class VEBM(BaseEstimator):
                 print (loss)
             loss.backward()
             optimizer.step()
+
+        def perm_to_P(self, perm):
+        K = len(perm)
+        P = np.zeros((K, K))
+        P[np.arange(K), perm] = 1
+        return P
+
+    def round_to_perm(self, P):
+        N = P.shape[0]
+        assert P.shape == (N, N)
+        try:
+            row, col = sp.optimize.linear_sum_assignment(-P)
+        except:
+            col = linear_sum_assignment_wrapper(-P)
+        P = np.zeros((N, N))
+        P[np.arange(N), col] = 1.0
+        return P
+
+    def vectorised_round_to_perm(self, P):
+        N = P.shape[0]
+        P_hard = np.empty(P.shape)
+        for i in range(P.shape[2]):
+            row, col = sp.optimize.linear_sum_assignment(-P[:,:,i])
+            P_i = np.zeros((N, N))
+            P_i[np.arange(N), col] = 1.0
+            P_hard[:,:,i] = P_i
+        return P_hard
 
     def plot_sequence(self, seq_true=[], gumbel_scale=None, verbose=False):
         n_feat = self.X.shape[1]

@@ -1,5 +1,4 @@
-# simulation functions
-# Author: Peter Wijeratne (p.wijeratne@pm.me)
+# author: Peter Wijeratne (p.wijeratne@pm.me)
 # Functions "gen_data_zscore", "gen_model_zscore", "gen_data_mixture", "gen_model_mixture" are adapted from pySuStaIn (https://github.com/ucl-pond/pySuStaIn)
 
 import numpy as np
@@ -262,7 +261,7 @@ def gen_data(n_ppl,
     labels = 2 * np.ones(n_ppl, dtype=int) # 2 - intermediate value, not used in mixture model fitting
     labels[index_case] = 1 # 1 - cases
     labels[index_control] = 0 # 0 - controls
-    return X, lengths, jumps, labels, X0, stages, times, seq, Q_subtypes, pi0_subtypes, subtypes
+    return X, lengths, jumps, labels, X0, stages, times, seq[0], Q_subtypes, pi0_subtypes, subtypes
 
 def sim_markov(Q,
                pi0,
