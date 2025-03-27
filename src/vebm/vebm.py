@@ -163,7 +163,7 @@ class VEBM(BaseEstimator):
         if return_dr:
             return -(distortion + rate), distortion, rate
         else:
-                return -(distortion + rate)
+            return -(distortion + rate)
             
     def train(self):
         optimizer = torch.optim.Adam(self.params, lr=self.step_size, eps=self.eps)
