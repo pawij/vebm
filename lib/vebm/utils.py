@@ -1,26 +1,27 @@
-# TEBM simulation functions
+# simulation functions
 # Author: Peter Wijeratne (p.wijeratne@pm.me)
 # Functions "gen_data_zscore", "gen_model_zscore", "gen_data_mixture", "gen_model_mixture" are adapted from pySuStaIn (https://github.com/ucl-pond/pySuStaIn)
 
 import numpy as np
 from scipy.stats import norm
 
-def gen_data(n_subtypes,
-             n_ppl,
+def gen_data(n_ppl,
              n_bms,
              n_obs,
-             n_components,
+             sigma_noise,
+             n_subtypes=1,
              model_type='GMM',
              is_cut=False,
              n_zscores=None,
              z_max=None,
-             sigma_noise=1.0,
              seq=[],
              fractions=[1],
              fwd_only=True,
              order=1,
              time_mean=1,
              verbose=False):
+    if model_type=='GMM':
+        n_components = n_bms+1
     # intialise z-score stuff
     if model_type=='Zscore':
         z_val_arr = np.array([[x+1 for x in range(n_zscores)]]*n_bms)
@@ -230,10 +231,6 @@ def gen_data(n_subtypes,
     for i in range(n_ppl):
         X0.append(X[i][:,0])
         stages_0.append(stages[i][0])
-    
-    from matplotlib import pyplot as plt
-    fig, ax = plt.subplots()
-    ax.hist(stages_0, bins=n_ppl)
     
     X0 = np.array(X0)
     stages_0 = np.array(stages_0)
