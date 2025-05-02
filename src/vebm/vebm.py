@@ -23,6 +23,7 @@ class VEBM(BaseEstimator):
                  n_iters=100,
                  step_size=1E-1,
                  sigmasq_prior=1.0,
+                 use_em=True,
                  verbose=False):
         
         # user-defined variables
@@ -36,6 +37,7 @@ class VEBM(BaseEstimator):
         self.n_mc_samples = n_mc_samples
         self.n_iters = n_iters
         self.step_size = step_size
+        self.use_em = use_em
         #FIXME: not currently used in ELBO
         #        self.sigmasq_prior = sigmasq_prior
         self.verbose = verbose
@@ -79,28 +81,49 @@ class VEBM(BaseEstimator):
         return torch.sum(logp_perm)
 
     def fit_gmms(self, X, y):
-        mixture_models = []
-        for i in range(X.shape[1]):
-            y_i = y[~np.isnan(X[:, i])]
-            X_i = X[~np.isnan(X[:, i]), i]
-            mm = gmm(n_components=2, covariance_type='diag', tol=1E-3, n_init=100,
-                     means_init=np.array([np.nanmean(X_i[y_i==0]), np.nanmean(X_i[y_i==1])]).reshape(2,1),
-                     precisions_init=np.array([1/np.nanstd(X_i[y_i==0]), 1/np.nanstd(X_i[y_i==1])]).reshape(2,1),
-                     weights_init=np.array([0.5,0.5]))
-            mm.fit(X_i.reshape(-1, 1))
-            mixture_models.append(mm)
-        self.mixture_models = mixture_models
-
+        thetas = []
+        if self.use_em:
+            for i in range(X.shape[1]):
+                y_i = y[~np.isnan(X[:, i])]
+                X_i = X[~np.isnan(X[:, i]), i]
+                mm = gmm(n_components=2, covariance_type='diag', tol=1E-3, n_init=100,
+                         means_init=np.array([np.nanmean(X_i[y_i==0]), np.nanmean(X_i[y_i==1])]).reshape(2,1),
+                         precisions_init=np.array([1/np.nanstd(X_i[y_i==0]), 1/np.nanstd(X_i[y_i==1])]).reshape(2,1),
+                         weights_init=np.array([0.5,0.5]))
+                mm.fit(X_i.reshape(-1, 1))
+                thetas.append([mm.means_[0][0], mm.covariances_[0][0],
+                               mm.means_[1][0], mm.covariances_[1][0],
+                               mm.weights_[0]])
+        else:
+            def gmm_like(theta, X, y):
+                pdf_0 = sp.stats.norm.pdf(X[y==0], loc=theta[0], scale=theta[1]) * theta[4]
+                pdf_1 = sp.stats.norm.pdf(X[y==1], loc=theta[2], scale=theta[3]) * (1-theta[4])
+                pdf_0[np.isnan(pdf_0)] = .5
+                pdf_1[np.isnan(pdf_1)] = .5
+                like = np.concatenate((pdf_0, pdf_1))
+                like[like == 0] = np.finfo(float).eps
+                return -1*np.sum(np.log(like))
+            for i in range(X.shape[1]):
+                y_i = y[~np.isnan(X[:, i])]
+                X_i = X[~np.isnan(X[:, i]), i]
+                theta_0 = [np.nanmean(X_i[y_i==0]), np.nanstd(X_i[y_i==0]), np.nanmean(X_i[y_i==1]), np.nanstd(X_i[y_i==1]), 0.5]
+                fit = sp.optimize.minimize(gmm_like,
+                                           theta_0,
+                                           args=(X_i, y_i),
+                                           method='SLSQP')
+                thetas.append(fit.x)
+        self.thetas = thetas
+            
     def calc_prob_mat(self, X, y):
         self.fit_gmms(X, y)
         prob_mat = np.zeros((X.shape[0], X.shape[1], 2))
         for i in range(X.shape[1]):
-            con_prob = sp.stats.norm.pdf(X[:,i], loc=self.mixture_models[i].means_[0][0], scale=self.mixture_models[i].covariances_[0][0])
-            cas_prob = sp.stats.norm.pdf(X[:,i], loc=self.mixture_models[i].means_[1][0], scale=self.mixture_models[i].covariances_[1][0])
-            con_prob[np.isnan(con_prob)] = 0.5
-            cas_prob[np.isnan(cas_prob)] = 0.5
-            prob_mat[:, i, 0] = con_prob.flatten()
-            prob_mat[:, i, 1] = cas_prob.flatten()
+            pdf_0 = sp.stats.norm.pdf(X[:,i], loc=self.thetas[i][0], scale=self.thetas[i][1])
+            pdf_1 = sp.stats.norm.pdf(X[:,i], loc=self.thetas[i][2], scale=self.thetas[i][3])
+            pdf_0[np.isnan(pdf_0)] = 0.5
+            pdf_1[np.isnan(pdf_1)] = 0.5
+            prob_mat[:, i, 0] = pdf_0.flatten()
+            prob_mat[:, i, 1] = pdf_1.flatten()
         return self.to_var(torch.tensor(prob_mat, dtype=self.dtype))
 
     def sinkhorn_logspace(self, logP, n_iters=10):
@@ -127,6 +150,7 @@ class VEBM(BaseEstimator):
 
     def gumbel_distance(self, log_mu_P):
         # from https://arxiv.org/abs/1802.08665 Supplementary Section B.3
+        # note the seemingly magic number come from the Gumbel distribution expectation (which is equal to the Euler-Mascheroni constant: https://en.wikipedia.org/wiki/Euler%27s_constant)
         arr = torch.sum(np.log(self.temperature_prior) - 0.5772156649 * self.temperature_prior / self.temperature -
                         log_mu_P * self.temperature_prior / self.temperature -
                         torch.exp(gammaln(1 + self.temperature_prior / self.temperature) - log_mu_P * self.temperature_prior / self.temperature)

@@ -33,8 +33,7 @@ if __name__ == "__main__":
     n_ppl = 100 # number of individuals
     n_fts = 10 # number of features
     n_obs = 1 # number of observations per individual
-    sigma_noise = 1.0 # standard deviation of noise
-    
+    sigma_noise = 1.0 # standard deviation of noise    
     print ('Generating simulated data...')
     # X is observed data for each individual and each observation: shape (n_ppl, n_features, n_obs)
     # X0 is the first observation for each individual only: shape (n_ppl, n_features)
@@ -54,6 +53,7 @@ if __name__ == "__main__":
                  n_mc_samples=n_mc_samples,
                  n_iters=n_iters,
                  step_size=step_size,
+                 use_em=True,
                  verbose=True)
     model.train()
     model.plot_sequence(seq_true=seq_true, verbose=True)
