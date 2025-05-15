@@ -8,6 +8,8 @@ from sklearn.mixture import GaussianMixture as gmm
 import torch
 from torch import logsumexp
 import matplotlib.pyplot as plt
+from pathlib import Path
+import pickle
 
 class VEBM(BaseEstimator):
 
@@ -54,7 +56,6 @@ class VEBM(BaseEstimator):
         self.eps = torch.finfo(self.dtype).eps
         #FIXME: assume a uniform prior on P?
         self.params = [self.to_var(torch.zeros((self.X.shape[1], self.X.shape[1]), requires_grad=True, device=self.device))]
-        self.prob_mat = self.calc_prob_mat(self.X, self.labels)
         
     def to_var(self, x):
         if self.is_cuda:
@@ -63,7 +64,8 @@ class VEBM(BaseEstimator):
 
     def vectorised_log_likelihood_ebm_logspace(self, P):
         k = self.prob_mat.shape[1]+1
-        logp_k = torch.log(torch.tensor(1/k))
+        # note we omit the uniform prior over k
+        #        logp_k = torch.log(torch.tensor(1/k))
         logp_perm_k = torch.zeros((self.prob_mat.shape[0], k, P.shape[2]))
         p_yes = torch.einsum('ij,jkl->ikl', self.prob_mat[:, :, 1], P)
         p_yes[p_yes == 0] = self.eps
@@ -77,7 +79,6 @@ class VEBM(BaseEstimator):
         logp_perm_k[:, 1:-1, :] = torch.flip(logcp_no[:, :-1, :], [1]) + logcp_yes[:, :-1, :]
         logp_perm_k[:, -1, :] = logcp_yes[:, -1, :]
         logp_perm = logsumexp(logp_perm_k, axis=1)
-        # note we omit the uniform prior over k
         return torch.sum(logp_perm)
 
     def fit_gmms(self, X, y):
@@ -88,11 +89,11 @@ class VEBM(BaseEstimator):
                 X_i = X[~np.isnan(X[:, i]), i]
                 mm = gmm(n_components=2, covariance_type='diag', tol=1E-3, n_init=100,
                          means_init=np.array([np.nanmean(X_i[y_i==0]), np.nanmean(X_i[y_i==1])]).reshape(2,1),
-                         precisions_init=np.array([1/np.nanstd(X_i[y_i==0]), 1/np.nanstd(X_i[y_i==1])]).reshape(2,1),
+                         precisions_init=np.array([1/np.nanstd(X_i[y_i==0])**2, 1/np.nanstd(X_i[y_i==1])**2]).reshape(2,1),
                          weights_init=np.array([0.5,0.5]))
                 mm.fit(X_i.reshape(-1, 1))
-                thetas.append([mm.means_[0][0], mm.covariances_[0][0],
-                               mm.means_[1][0], mm.covariances_[1][0],
+                thetas.append([mm.means_[0][0], np.sqrt(mm.covariances_[0][0]),
+                               mm.means_[1][0], np.sqrt(mm.covariances_[1][0]),
                                mm.weights_[0]])
         else:
             def gmm_like(theta, X, y):
@@ -102,6 +103,8 @@ class VEBM(BaseEstimator):
                 pdf_1[np.isnan(pdf_1)] = .5
                 like = np.concatenate((pdf_0, pdf_1))
                 like[like == 0] = np.finfo(float).eps
+                if np.sum(np.isnan(like))>0 or np.sum(np.isinf(like))>0:
+                    quit()
                 return -1*np.sum(np.log(like))
             for i in range(X.shape[1]):
                 y_i = y[~np.isnan(X[:, i])]
@@ -113,9 +116,8 @@ class VEBM(BaseEstimator):
                                            method='SLSQP')
                 thetas.append(fit.x)
         self.thetas = thetas
-            
-    def calc_prob_mat(self, X, y):
-        self.fit_gmms(X, y)
+
+    def calc_prob_mat(self, X):
         prob_mat = np.zeros((X.shape[0], X.shape[1], 2))
         for i in range(X.shape[1]):
             pdf_0 = sp.stats.norm.pdf(X[:,i], loc=self.thetas[i][0], scale=self.thetas[i][1])
@@ -124,7 +126,7 @@ class VEBM(BaseEstimator):
             pdf_1[np.isnan(pdf_1)] = 0.5
             prob_mat[:, i, 0] = pdf_0.flatten()
             prob_mat[:, i, 1] = pdf_1.flatten()
-        return self.to_var(torch.tensor(prob_mat, dtype=self.dtype))
+        self.prob_mat = self.to_var(torch.tensor(prob_mat, dtype=self.dtype))
 
     def sinkhorn_logspace(self, logP, n_iters=10):
         n = logP.size()[1]
@@ -150,7 +152,7 @@ class VEBM(BaseEstimator):
 
     def gumbel_distance(self, log_mu_P):
         # from https://arxiv.org/abs/1802.08665 Supplementary Section B.3
-        # note the seemingly magic number come from the Gumbel distribution expectation (which is equal to the Euler-Mascheroni constant: https://en.wikipedia.org/wiki/Euler%27s_constant)
+        # note the seemingly magic number comes from the Gumbel distribution expectation (which is equal to the Euler-Mascheroni constant: https://en.wikipedia.org/wiki/Euler%27s_constant)
         arr = torch.sum(np.log(self.temperature_prior) - 0.5772156649 * self.temperature_prior / self.temperature -
                         log_mu_P * self.temperature_prior / self.temperature -
                         torch.exp(gammaln(1 + self.temperature_prior / self.temperature) - log_mu_P * self.temperature_prior / self.temperature)
@@ -190,6 +192,8 @@ class VEBM(BaseEstimator):
             return -(distortion + rate)
             
     def train(self):
+        self.fit_gmms(self.X, self.labels)
+        self.calc_prob_mat(self.X)
         optimizer = torch.optim.Adam(self.params, lr=self.step_size, eps=self.eps)
         for i in range(self.n_iters):
             optimizer.zero_grad()
@@ -198,6 +202,89 @@ class VEBM(BaseEstimator):
                 print (loss)
             loss.backward()
             optimizer.step()
+
+    def predict_stage(self, X, hard_perm=True):
+        self.calc_prob_mat(X)
+        log_mu_P = self.params[0]
+        # point estimate of sequence (zero Gumbel noise)
+        # add to \mu and scale
+        log_P = (log_mu_P) / self.temperature
+        # move \mu closer to Birkhoff polytope
+        log_P = self.sinkhorn_logspace(log_P, self.n_sinkhorn)
+        # note zero variance
+        P_soft = torch.exp(log_P)
+        k = self.prob_mat.shape[1]+1
+        if hard_perm:
+            # round to permutation matrices
+            P_soft = P_soft.detach().cpu().numpy()
+            P_hard = self.round_to_perm(P_soft[0])
+            S_hard = np.einsum('i,ij->j', np.arange(X.shape[1]), P_hard)
+            p_yes = np.array(self.prob_mat[:, S_hard, 1])
+            p_yes[p_yes == 0] = self.eps
+            p_no = np.array(self.prob_mat[:, S_hard, 0])
+            p_no[p_no == 0] = self.eps
+            logp_yes = np.log(p_yes)
+            logp_no = np.log(p_no)
+            logcp_yes = np.cumsum(logp_yes, axis=1)
+            logcp_no = np.cumsum(logp_no, axis=1)
+            logp_perm_k = np.zeros((self.prob_mat.shape[0], k))
+            logp_perm_k[:, 0] = logcp_no[:, -1]
+            logp_perm_k[:, 1:-1] = np.flip(logcp_no[:, :-1], [1]) + logcp_yes[:, :-1]
+            logp_perm_k[:, -1] = logcp_yes[:, -1]
+            #            p_perm_k = np.exp(logp_perm_k)/np.sum(np.exp(logp_perm_k), axis=1).reshape(logp_perm_k.shape[0], 1)
+        else:
+            #FIXME
+            print ('Not implemented')
+            quit()
+            p_yes = torch.einsum('ij,jkl->ikl', self.prob_mat[:, :, 1], P_soft)
+            p_yes[p_yes == 0] = self.eps
+            p_no = torch.einsum('ij,jkl->ikl', self.prob_mat[:, :, 0], torch.flip(P_soft, [1]))
+            p_no[p_no == 0] = self.eps
+            p_yes = p_yes.detach().numpy()
+            p_no = p_no.detach().numpy()
+            logp_yes = np.log(p_yes)
+            logp_no = np.log(p_no)
+            logcp_yes = np.cumsum(logp_yes, axis=1)
+            logcp_no = np.cumsum(logp_no, axis=1)
+            logp_perm_k = np.zeros((self.prob_mat.shape[0], k, P_soft.shape[2]))
+            logp_perm_k[:, 0, :] = logcp_no[:, -1, :]
+            logp_perm_k[:, 1:-1, :] = np.flip(logcp_no[:, :-1, :], [1]) + logcp_yes[:, :-1, :]
+            logp_perm_k[:, -1, :] = logcp_yes[:, -1, :]
+            logp_perm = logsumexp(logp_perm_k, axis=1)
+            # print (logp_perm_k.shape) (n_ppl, n_events, P_soft.shape[0]*P_soft.shape[1])
+        #
+        stages = np.argmax(logp_perm_k, axis=1)
+        """
+        stages = np.zeros(p_perm_k.shape[0])
+        for i in range(p_perm_k.shape[0]):
+            stages[i] = np.mean(p_perm_k[i] * np.arange(1,k+1)) * (k-1) - 1
+        """
+        return stages, logp_perm_k
+        """
+        # note we omit the uniform prior over k
+        #        logp_k = torch.log(torch.tensor(1/k))
+        logp_perm_k = torch.zeros((self.prob_mat.shape[0], k, P_soft.shape[2]))
+        p_yes = torch.einsum('ij,jkl->ikl', self.prob_mat[:, :, 1], P_soft)
+        p_yes[p_yes == 0] = self.eps
+        p_no = torch.einsum('ij,jkl->ikl', self.prob_mat[:, :, 0], torch.flip(P_soft, [1]))
+        p_no[p_no == 0] = self.eps
+        logp_yes = np.log(p_yes.detach().cpu().numpy())
+        logp_no = np.log(p_no.detach().cpu().numpy())
+
+        logp_yes_vec = np.zeros((logp_yes.shape[0], logp_yes.shape[1]))
+        logp_no_vec = np.zeros((logp_no.shape[0], logp_no.shape[1]))
+        for i in range(logp_yes_vec.shape[0]):
+            val_yes_i, vec_yes_i = np.linalg.eig(logp_yes[i])
+            logp_yes_vec[i] = val_yes_i
+            val_no_i, vec_no_i = np.linalg.eig(logp_no[i])
+            logp_no_vec[i] = val_no_i
+            
+        stage_likes = np.zeros((X.shape[0], k))
+        for i in range(k):
+            stage_likes[:, i] = np.nanprod(logp_yes_vec[:, :i], 1)*np.nanprod(logp_no_vec[:, i:X.shape[1]], 1)
+        stages = np.argmax(stage_likes, axis=1)
+        """
+        return stages, stage_likes
 
     def perm_to_P(self, perm):
         K = len(perm)
@@ -281,7 +368,7 @@ class VEBM(BaseEstimator):
                 pcorr_vi /= ncorr_vi
             else:
                 pcorr_vi = np.nan
-            if verbose:
+            if verbose and len(seq_true)>0:
                 print ('S_true, S_vi, kt_vi', seq_true.astype(int), S_point, kt_vi)
                 print ('frac_correct', np.sum(S_point==seq_true)/n_feat, ' chance ', 1/n_feat)
                 print ('pcorr_vi', pcorr_vi)
@@ -315,3 +402,51 @@ class VEBM(BaseEstimator):
                     ax.add_patch(rect)
             ax.legend(fontsize=20)
         plt.subplots_adjust(bottom=0.15, top=0.95)
+
+    def plot_gmms(self, score_names=None, class_names=None):
+        n_particp, n_biomarkers = self.X.shape
+        if score_names is None:
+            score_names = ['BM{}'.format(x+1) for x in range(n_biomarkers)]
+        if class_names is None:
+            class_names = ['Control', 'Case']
+        n_x = np.round(np.sqrt(n_biomarkers)).astype(int)
+        n_y = np.ceil(np.sqrt(n_biomarkers)).astype(int)
+        fig, ax = plt.subplots(n_y, n_x, figsize=(12, 12))
+        for i in range(n_biomarkers):
+            bio_X = self.X[:, i]
+            bio_y = self.labels[~np.isnan(bio_X)]
+            bio_X = bio_X[~np.isnan(bio_X)]
+            hist_dat = [bio_X[bio_y == 0],
+                        bio_X[bio_y == 1]]
+            n_unique_values_bio_X = len(np.unique(bio_X))
+            leg1 = ax.flat[i].hist(hist_dat,
+                                   label=class_names,
+                                   density=True,
+                                   alpha=0.7,
+                                   stacked=True)
+            linspace = np.linspace(bio_X.min(), bio_X.max(), 100).reshape(-1, 1)
+            controls_score = sp.stats.norm.pdf(linspace, loc=self.thetas[i][0], scale=self.thetas[i][1]) * self.thetas[i][4]
+            patholog_score = sp.stats.norm.pdf(linspace, loc=self.thetas[i][2], scale=self.thetas[i][3]) * (1-self.thetas[i][4])
+            ax.flat[i].plot(linspace, controls_score)
+            ax.flat[i].plot(linspace, patholog_score)
+            ax.flat[i].set_title(score_names[i])
+            ax.flat[i].axes.get_yaxis().set_visible(False)
+
+
+    def write(self, path='model.pkl'):
+        file_out = Path(path)
+        pickle_file = open(file_out, 'wb')
+        data = {}
+        data['params'] = self.params
+        data['thetas'] = self.thetas
+        pickle.dump(data, pickle_file)
+        pickle_file.close()
+    
+    def read(self, path='model.pkl'):
+        file_in = Path(path)
+        pickle_file = open(file_in, 'rb')
+        data = pickle.load(pickle_file)
+        self.params = data['params']
+        self.thetas = data['thetas']
+        pickle_file.close()
+        self.calc_prob_mat(self.X)
