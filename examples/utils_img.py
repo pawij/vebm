@@ -393,8 +393,10 @@ def gen_model_mixture_block(N_biomarkers, N_groups=2):
     #### if 1 event / group, should return same likelihood as original non-block model
     ####
     #Q: calculate likelihood in 1 or 2 operations?
-    #1: i) operate on data likelihood to group and order terms according to G and S
+    #1: i) operate on data likelihood to group and order terms according to G and S (i.e., sparsity inducing transform on data likelihood matrices)
+    ### no - because you would need every permutation within each group (I think)
     #2: i) operate on data likelihood to group terms according to G (i.e, change shape of data likelihood from (,N_biomarkers) to (,N_groups))
+    ### e.g., [[1, 2, 3]] (shape: (1,3)) --> [[[1, 2]], 3] (shape: (1,2,N_per_group))    
     #2: ii) operate on i) to order terms according to S
     
     S_rnd = np.random.permutation(N_groups).astype(int)
@@ -402,8 +404,8 @@ def gen_model_mixture_block(N_biomarkers, N_groups=2):
     for i in range(N_groups):
         S_mat[i, S_rnd[i]] = 1
 
-    S_mat = np.array([[1, 0],
-                      [0, 1]])
+    S_mat = np.array([[0, 1],
+                      [1, 0]])
     #    S_mat = np.array([[1, 0, 0],
     #                      [0, 1, 0],
     #                      [0, 0, 1]])
@@ -427,6 +429,27 @@ def gen_model_mixture_block(N_biomarkers, N_groups=2):
     # sampling from A_mat ~ Bernoulli(G_0 * B * G_0^T), where B is [0,1]^KxK group-group interaction
     # A_mat: affinity / adjacency matrix between groups (edges between node / event i and j)
     print (G_mat)
+
+    p_yes = np.array([[1, 2, 3]])
+    print (p_yes[0])
+    print (p_yes[0][0], p_yes[0][1], p_yes[0][2])
+    #    p_yes = [[[1, 2], [3]]]
+    #    print (p_yes[0])
+    #    print (p_yes[0][0], p_yes[0][1])
+    #    print (p_yes[0][0][0], p_yes[0][0][1], p_yes[0][1][0])
+
+    # can we also make this soft assignment?
+    p_yes_block = [p_yes[0][G_mat.T[j]==1] for j in range(N_groups)]
+    print (p_yes_block)
+    p_yes_block = np.array([np.multiply(p_yes[0],G_mat.T[j]) for j in range(N_groups)]).T
+    print (p_yes_block)
+    print (p_yes_block.shape, S_mat.shape)
+    p_yes_block = np.einsum('ij,jk->ik', p_yes_block, S_mat)
+    print (p_yes_block.T)
+    import torch
+    print (torch.tensor(p_yes_block, dtype=torch.float64))
+    quit()
+    
     A_mat = np.matmul(np.matmul(G_mat, S_mat), G_mat.T)
     print (A_mat)
     #    print (np.matmul(np.matmul(G_mat.T, A_mat), G_mat))
