@@ -8,6 +8,7 @@ def gen_data(n_ppl,
              n_bms,
              n_obs,
              sigma_noise,
+             n_groups,
              n_subtypes=1,
              model_type='GMM',
              is_cut=False,
@@ -21,6 +22,8 @@ def gen_data(n_ppl,
              verbose=False):
     if model_type=='GMM':
         n_components = n_bms+1
+    if model_type=='block':
+        n_components = n_groups+1
     # intialise z-score stuff
     if model_type=='Zscore':
         z_val_arr = np.array([[x+1 for x in range(n_zscores)]]*n_bms)
@@ -200,8 +203,8 @@ def gen_data(n_ppl,
                                         stage_biomarker_index)
     else:
         if len(seq)==0:
-            seq, img = gen_model_img_mixture(33, 33)
-        X, X_denoised = gen_data_img_mixture(stages, np.array([seq]), img, sigma_noise)
+            seq, group = gen_model_mixture_block(n_bms, n_groups)
+        X, X_denoised = gen_data_mixture_block(stages, group, np.array([seq]), sigma_noise)
     # true sojourns from generated data
     for s in range(n_subtypes):
         stages_s = stages[subtypes==s]
@@ -252,12 +255,12 @@ def gen_data(n_ppl,
     times = np.array(times_temp)
     jumps = np.array(jumps_temp)
     # choose which subjects will be cases and which will be controls
-    #    MIN_CASE_STAGE = np.round((n_bms + 1) * 0.9)
-    #    index_case = np.where(stages_0 >=  MIN_CASE_STAGE)[0]
-    #    index_case = np.where(stages_0 > (n_bms-1))[0]
-    index_case = np.where(stages_0 > round(n_bms*0.8))[0]
-    #    index_control = np.where(stages_0 < 1)[0]
-    index_control = np.where(stages_0 < round(n_bms*0.2))[0]
+    if model_type=='block':
+        index_case = np.where(stages_0 >= np.ceil(n_groups*0.8))[0]
+        index_control = np.where(stages_0 < np.ceil(n_groups*0.2))[0]
+    else:
+        index_case = np.where(stages_0 > round(n_bms*0.8))[0]
+        index_control = np.where(stages_0 < round(n_bms*0.2))[0]
     labels = 2 * np.ones(n_ppl, dtype=int) # 2 - intermediate value, not used in mixture model fitting
     labels[index_case] = 1 # 1 - cases
     labels[index_control] = 0 # 0 - controls
@@ -396,7 +399,7 @@ def gen_model_mixture_block(N_biomarkers, N_groups=2):
     #1: i) operate on data likelihood to group and order terms according to G and S (i.e., sparsity inducing transform on data likelihood matrices)
     ### no - because you would need every permutation within each group (I think)
     #2: i) operate on data likelihood to group terms according to G (i.e, change shape of data likelihood from (,N_biomarkers) to (,N_groups))
-    ### e.g., [[1, 2, 3]] (shape: (1,3)) --> [[[1, 2]], 3] (shape: (1,2,N_per_group))    
+    ### e.g., [1, 2, 3] (shape: (1,3)) --> [[1, 2], [3]] (shape (inhomogeneous): (1,2,N_per_group))    
     #2: ii) operate on i) to order terms according to S
     
     S_rnd = np.random.permutation(N_groups).astype(int)
@@ -404,8 +407,8 @@ def gen_model_mixture_block(N_biomarkers, N_groups=2):
     for i in range(N_groups):
         S_mat[i, S_rnd[i]] = 1
 
-    S_mat = np.array([[0, 1],
-                      [1, 0]])
+    #    S_mat = np.array([[0, 1],
+    #                      [1, 0]])
     #    S_mat = np.array([[1, 0, 0],
     #                      [0, 1, 0],
     #                      [0, 0, 1]])
@@ -422,47 +425,77 @@ def gen_model_mixture_block(N_biomarkers, N_groups=2):
     #    G_mat = np.array([[0, 0, 1],
     #                      [0, 1, 0],
     #                      [1, 0, 0]])
-    G_mat = np.array([[1, 0],
-                      [1, 0],
-                      [0, 1]])
+    #    G_mat = np.array([[1, 0],
+    #                      [1, 0],
+    #                      [0, 1]])
     
-    # sampling from A_mat ~ Bernoulli(G_0 * B * G_0^T), where B is [0,1]^KxK group-group interaction
-    # A_mat: affinity / adjacency matrix between groups (edges between node / event i and j)
+    # A_mat ~ Bernoulli(G_0 * B * G_0^T), where B is [0,1]^KxK group-group affinity / adjacency matrix
+    # A_mat: symmetric affinity / adjacency matrix between events (undirected edges between node / event i and j)
     print (G_mat)
-
+    """
     p_yes = np.array([[1, 2, 3]])
-    print (p_yes[0])
-    print (p_yes[0][0], p_yes[0][1], p_yes[0][2])
-    #    p_yes = [[[1, 2], [3]]]
-    #    print (p_yes[0])
-    #    print (p_yes[0][0], p_yes[0][1])
-    #    print (p_yes[0][0][0], p_yes[0][0][1], p_yes[0][1][0])
-
-    # can we also make this soft assignment?
+    # hard assignment
+    # FIXME: inhomogeneous shape
     p_yes_block = [p_yes[0][G_mat.T[j]==1] for j in range(N_groups)]
     print (p_yes_block)
+    # soft assignment
     p_yes_block = np.array([np.multiply(p_yes[0],G_mat.T[j]) for j in range(N_groups)]).T
     print (p_yes_block)
     print (p_yes_block.shape, S_mat.shape)
+    # order likelihoods
     p_yes_block = np.einsum('ij,jk->ik', p_yes_block, S_mat)
     print (p_yes_block.T)
     import torch
     print (torch.tensor(p_yes_block, dtype=torch.float64))
     quit()
-    
+    """
     A_mat = np.matmul(np.matmul(G_mat, S_mat), G_mat.T)
     print (A_mat)
-    #    print (np.matmul(np.matmul(G_mat.T, A_mat), G_mat))
-    quit()
-    return S_mat, G_mat
+    
+    return S_rnd, G_mat
 
 def gen_data_mixture_block(stages,
+                           groups,
                            gt_ordering,
-                           sigma_noise=1.):    
+                           sigma_noise=1.):
     # for each stage: sample all distributions in group
-    # e.g., for 10 feature, 2 group, 5 feature / group, model: for stage 1, sample corresponding 5 "abnormal" and 5 "normal" features 
-    return
-
+    # e.g., for 10 feature, 2 group, 5 feature / group, model: for stage 1, sample corresponding 5 "abnormal" and 5 "normal" features
+    N_biomarkers                        = groups.shape[0]
+    N_groups = groups.shape[1]
+    N_subjects                          = len(stages)
+    #controls are always drawn from N(0, 1) distribution
+    mean_controls                       = np.array([0]   * N_biomarkers)
+    std_controls                        = np.array([sigma_noise] * N_biomarkers)
+    #mean and variance for cases
+    #        mean_cases                       = np.array(np.random.uniform(size=N_biomarkers))
+    mean_cases                       = np.array(np.random.uniform(size=N_biomarkers)+1.5)
+    std_cases                        = np.array([sigma_noise] * N_biomarkers)
+    # initialise variable observation length arrays
+    data = []
+    for i in range(len(stages)):
+        data.append(np.zeros((N_biomarkers, len(stages[i]))))
+    data_denoised = []
+    for i in range(len(stages)):
+        data_denoised.append(np.zeros((N_biomarkers, len(stages[i]))))
+    #loop over all subjects, generating observations for each biomarker based on what subtype and stage they're in
+    for i in range(N_subjects):
+        stage_i = stages[i]
+        for t in range(len(stage_i)):
+            S_i                               = gt_ordering[0, :].astype(int) # first index would be subtype
+            stage_i_t                         = stage_i[t].astype(int)
+            #fill in with ABNORMAL values up to the subject's stage
+            for j in range(stage_i_t):
+                k_idx = np.where(groups[:,S_i[j]]==1)[0] # row indices of features in the group at this event
+                for k in k_idx:
+                    data[i][k][t]             = np.random.normal(mean_cases[k], std_cases[k])
+                    data_denoised[i][k][t]    = mean_cases[k]
+            # fill in with NORMAL values from the subject's stage+1 to last stage
+            for j in range(stage_i_t, N_groups):
+                k_idx = np.where(groups[:,S_i[j]]==1)[0] # row indices of features in the group at this event
+                for k in k_idx:
+                    data[i][k][t]             = np.random.normal(mean_controls[k], std_controls[k])
+                    data_denoised[i][k][t]    = mean_controls[k]
+    return data, data_denoised
 
 def gen_data_mixture(stages,
                      gt_ordering,
@@ -511,137 +544,3 @@ def gen_data_mixture(stages,
     return data, data_denoised
 
 
-####
-
-def gen_model_img_mixture(nx, ny):
-    img = np.zeros((nx, ny))
-    img_x_centre, img_y_centre = int(nx/2), int(ny/2)
-    lx, ly = nx/4, ny/4
-    def dilate(i,j,img,n,val):
-        img[i,j] = val
-        img[i-n,j] = val
-        img[i+n,j] = val
-        img[i,j-n] = val
-        img[i,j+n] = val
-        img[i-n,j-n] = val
-        img[i+n,j+n] = val
-        img[i+n,j-n] = val
-        img[i-n,j+n] = val
-    for i in range(nx):
-        for j in range(ny):
-            if i == img_x_centre and j == img_y_centre:
-                dilate(i,j,img,1,1)
-                dilate(i,j,img,2,1)
-                dilate(i,j,img,3,1)
-            if i == int(lx) and j == int(ly):
-                dilate(i,j,img,1,2)
-                dilate(i,j,img,2,2)
-                dilate(i,j,img,3,2)
-            if i == int(3*lx) and j == int(ly):
-                dilate(i,j,img,1,3)
-                dilate(i,j,img,2,3)
-                dilate(i,j,img,3,3)
-            if i == int(lx) and j == int(3*ly):
-                dilate(i,j,img,1,2)
-                dilate(i,j,img,2,2)
-                dilate(i,j,img,3,2)
-            if i == int(3*lx) and j == int(3*ly):
-                dilate(i,j,img,1,3)
-                dilate(i,j,img,2,3)
-                dilate(i,j,img,3,3)
-    #    grid = np.indices((nx, ny))
-    grid = np.arange(int(nx*ny))
-    roi_0 = grid[img.flatten()==0]
-    np.random.shuffle(roi_0)
-    roi_1 = grid[img.flatten()==1]
-    np.random.shuffle(roi_1)
-    roi_2 = grid[img.flatten()==2]
-    np.random.shuffle(roi_2)
-    roi_3 = grid[img.flatten()==3]
-    np.random.shuffle(roi_3)
-    
-    seq = np.hstack((roi_1, roi_2))
-    seq = np.hstack((seq, roi_3))
-    #    seq = np.hstack((seq, roi_0))
-    img_seq = np.zeros(nx*ny)
-    #    from matplotlib import pyplot as plt
-    #    fig, ax = plt.subplots()
-    #    ax.imshow(img)
-    #    plt.show()
-    #    for i in range(len(img_seq)):
-    #        img_seq[seq[i]] = 1
-        #        fig, ax = plt.subplots()
-        #        ax.imshow(img_seq.reshape((nx, ny)))
-        #        plt.show()        
-    return seq, img
-
-def gen_data_img_mixture(stages,
-                         gt_ordering,
-                         img,
-                         sigma_noise=1.):
-    N_biomarkers                        = gt_ordering.shape[1]
-    N_subjects                          = len(stages)
-    #controls are always drawn from N(0, 1) distribution
-    mean_controls                       = np.array([0]   * N_biomarkers)
-    std_controls                        = np.array([sigma_noise] * N_biomarkers)
-    #mean and variance for cases
-    #if using mixture_GMM, use normal distribution with mean 1 and std. devs sampled from a range
-    #        mean_cases                       = np.array(np.random.uniform(size=N_biomarkers))
-    #    mean_cases                       = np.array(np.random.uniform(size=N_biomarkers)+1.5) # PW: 1.5 to look more like ADNI SNR
-    #    std_cases                        = np.array([sigma_noise] * N_biomarkers)
-
-    multi_norms_controls, multi_norms_cases = [], []
-    unique_events, n_events = np.unique(img.flatten(), return_counts=True)
-    print (unique_events, n_events)
-    # add uncorrelated events
-    #    multi_norms_controls.append(([0]*n_events[0], 1.0))
-    #    multi_norms_cases.append(([np.random.uniform()]*n_events[0], 1.0))
-    for i in range(3):
-        # generate semi-positive definite matrix
-        A = np.random.rand(n_events[i], n_events[i])
-        B = np.dot(A, A.transpose())
-        multi_norms_controls.append(([0]*n_events[i], B))
-        # generate semi-positive definite matrix
-        A = np.random.rand(n_events[i], n_events[i])
-        B = np.dot(A, A.transpose())
-        multi_norms_cases.append(([np.random.uniform()]*n_events[i], B))
-
-    stage_to_pdfs_map = []
-    for i in range(stages):
-        if stages[i] <= n_events[0]:
-            stage_to_pdfs_map.append(0)
-        elif stages[i] > n_events[0] and stages[i] <= n_events[1]:
-            stage_to_pdfs_map.append(1)
-        elif stages[i] > n_events[1] and stages[i] <= n_events[2]:
-            stage_to_pdfs_map.append(2)
-        elif stages[i] > n_events[2]:
-            stage_to_pdfs_map.append(3)
-    
-    # initialise variable observation length arrays
-    data = []
-    for i in range(len(stages)):
-        data.append(np.zeros((N_biomarkers, len(stages[i]))))
-    data_denoised = []
-    for i in range(len(stages)):
-        data_denoised.append(np.zeros((N_biomarkers, len(stages[i]))))
-    #loop over all subjects, creating measurment for each biomarker based on what subtype and stage they're in
-    for i in range(N_subjects):
-        stage_i = stages[i]
-        for t in range(len(stage_i)):
-            S_i                               = gt_ordering[0, :].astype(int) # first index would be subtype
-            stage_i_t                         = stage_i[t].astype(int)
-            #fill in with ABNORMAL values up to the subject's stage
-            for j in range(stage_i_t):
-                #                data[i][S_i[j]][t] = np.random.normal(mean_cases[S_i[j]], std_cases[S_i[j]])
-                #                data_denoised[i][S_i[j]][t]    = mean_cases[S_i[j]]
-                mean, std = multi_norms_cases[stage_to_pdfs_map[S_i[j]]]
-                data[i][S_i[j]][t] = np.random.multivariate_normal(mean, std)
-                data_denoised[i][S_i[j]][t]    = mean
-            # fill in with NORMAL values from the subject's stage+1 to last stage
-            for j in range(stage_i_t, N_biomarkers):
-                #                data[i][S_i[j]][t]             = np.random.normal(mean_controls[S_i[j]], std_controls[S_i[j]])
-                #                data_denoised[i][S_i[j]][t]    = mean_controls[S_i[j]]
-                mean, std = multi_norms_controls[stage_to_pdfs_map[S_i[j]]]
-                data[i][S_i[j]][t] = np.random.multivariate_normal(mean, std)
-                data_denoised[i][S_i[j]][t]    = mean
-    return data, data_denoised

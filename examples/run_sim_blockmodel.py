@@ -7,9 +7,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 from vebm import VEBM
-from utils import gen_data
-
-from utils_img import gen_model_mixture_block
+from utils_img import gen_data
 
 try:
     seed = int(sys.argv[1])
@@ -35,17 +33,35 @@ if __name__ == "__main__":
     n_ppl = 100 # number of individuals
     n_fts = 4 # number of features
     n_obs = 1 # number of observations per individual
-    sigma_noise = 1E-1 # standard deviation of noise    
+    sigma_noise = 1E0 # standard deviation of noise    
     print ('Generating simulated data...')
     # X is observed data for each individual and each observation: shape (n_ppl, n_features, n_obs)
     # X0 is the first observation for each individual only: shape (n_ppl, n_features)
     # labels is the control ("con") or case ("case") labels: shape (n_ppl)
     # S_true is the true simulated sequence, used for post-hoc comparison: shape (n_fts+1)
 
-    gen_model_mixture_block(n_fts, N_groups=2)
-    
-    X, _, _, labels, X0, stages_true, _, S_true, _, _, _ = gen_data(n_ppl, n_fts, n_obs, sigma_noise)
+    X, _, _, labels, X0, stages_true, _, S_true, _, _, _ = gen_data(n_ppl, n_fts, n_obs, sigma_noise, n_groups=2, n_subtypes=1, model_type='block')
     print ('n_ppl {} n_fts {} n_iters {} step_size {} n_sinkhorn {} temperature {} temperature_prior {} gumbel_scale {} n_mc_samples {} sigma_noise {}'.format(n_ppl, n_fts, n_iters, step_size, n_sinkhorn, temperature, temperature_prior, gumbel_scale, n_mc_samples, sigma_noise))
+
+    print (X.shape, X0.shape, labels.shape, stages_true.shape, S_true.shape)
+    print (np.unique(labels, return_counts=True))
+    n_x = np.round(np.sqrt(n_fts)).astype(int)
+    n_y = np.ceil(np.sqrt(n_fts)).astype(int)
+    fig, ax = plt.subplots(n_y, n_x, figsize=(12, 12))
+    for i in range(n_fts):
+        bio_X = X0[:, i]
+        bio_y = labels[~np.isnan(bio_X)]
+        bio_X = bio_X[~np.isnan(bio_X)]
+        hist_dat = [bio_X[bio_y == 0],
+                    bio_X[bio_y == 1]]
+        n_unique_values_bio_X = len(np.unique(bio_X))
+        leg1 = ax.flat[i].hist(hist_dat,
+                               label=['Con','Cas'],
+                               density=True,
+                               alpha=0.7,
+                               stacked=True)
+        ax.flat[i].axes.get_yaxis().set_visible(False)
+    plt.show()
     
     # run model
     print("Variational inference for matching...")
