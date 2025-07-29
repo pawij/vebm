@@ -414,11 +414,14 @@ def gen_model_mixture_block(N_biomarkers, N_groups=2):
     #                      [0, 0, 1]])
         
     print (S_mat)
+    # hard group assignment
     # randomly assign each event to a group
     G_mat = np.zeros((N_biomarkers, N_groups))
     for i in range(N_biomarkers):
         g_i = np.random.randint(N_groups)
         G_mat[i, g_i] = 1
+    # TODO: soft group assignment - use Dirichlet (conjugate prior for categorical distribution) for each row
+    # θ ~ Dirichlet(α * Id_K) distribution, of which the parameter α comes from a Gamma(a, b) prior
 
     #    G_mat = np.array([[1, 0],
     #                      [0, 1]])    
@@ -429,7 +432,7 @@ def gen_model_mixture_block(N_biomarkers, N_groups=2):
     #                      [1, 0],
     #                      [0, 1]])
     
-    # A_mat ~ Bernoulli(G_0 * B * G_0^T), where B is [0,1]^KxK group-group affinity / adjacency matrix
+    # A_mat ~ Bernoulli(G_mat * B_mat * G_mat^T), where B_mat is [0,1]^KxK group-group affinity / adjacency matrix
     # A_mat: symmetric affinity / adjacency matrix between events (undirected edges between node / event i and j)
     print (G_mat)
     """
@@ -449,10 +452,22 @@ def gen_model_mixture_block(N_biomarkers, N_groups=2):
     print (torch.tensor(p_yes_block, dtype=torch.float64))
     quit()
     """
-    A_mat = np.matmul(np.matmul(G_mat, S_mat), G_mat.T)
-    print (A_mat)
+
+    # if B_mat == Id and G_mat == Id, then we recover the original EBM
+    # TODO: generate each edge probability between groups as conditional on group membership
+    # "the block matrix, each element of which represents the edge probability of two nodes, conditional on their group memberships."
+    # "This implies that the total number of edges between any two blocks i and j is a
+    # Binomial distributed random variable with mean equal to the product of Cij and the number
+    # of dyads available. For undirected and directed graphs, the latter term is NiNj /2 and NiNj , respectively."
+
+    # Cij ∼ Beta(A_ij , B_ij ), where A and B are K × K matrices with all positive hyperparameters
+
+    # sample from Beta distribution (conjugate prior of Bernoulli, binomial)
+    #    B_mat = 
+    A_mat = np.matmul(np.matmul(G_mat, B_mat), G_mat.T)
+    print (A_mat)    
     
-    return S_rnd, G_mat
+    return S_rnd, G_mat, B_mat
 
 def gen_data_mixture_block(stages,
                            groups,
