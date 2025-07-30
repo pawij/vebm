@@ -2,7 +2,7 @@
 # Functions "gen_data_zscore", "gen_model_zscore", "gen_data_mixture", "gen_model_mixture" are adapted from pySuStaIn (https://github.com/ucl-pond/pySuStaIn)
 
 import numpy as np
-from scipy.stats import norm
+from scipy.stats import norm, beta, bernoulli, dirichlet, gamma
 
 def gen_data(n_ppl,
              n_bms,
@@ -203,8 +203,8 @@ def gen_data(n_ppl,
                                         stage_biomarker_index)
     else:
         if len(seq)==0:
-            seq, group = gen_model_mixture_block(n_bms, n_groups)
-        X, X_denoised = gen_data_mixture_block(stages, group, np.array([seq]), sigma_noise)
+            seq, G_mat_soft, G_mat_hard, B_mat, A_mat = gen_model_mixture_block(n_bms, n_groups)
+        X, X_denoised = gen_data_mixture_block(stages, G_mat_hard, np.array([seq]), sigma_noise)
     # true sojourns from generated data
     for s in range(n_subtypes):
         stages_s = stages[subtypes==s]
@@ -264,7 +264,7 @@ def gen_data(n_ppl,
     labels = 2 * np.ones(n_ppl, dtype=int) # 2 - intermediate value, not used in mixture model fitting
     labels[index_case] = 1 # 1 - cases
     labels[index_control] = 0 # 0 - controls
-    return X, lengths, jumps, labels, X0, stages, times, seq[0], Q_subtypes, pi0_subtypes, subtypes
+    return X, lengths, jumps, labels, X0, stages, times, seq, Q_subtypes, pi0_subtypes, subtypes
 
 def sim_markov(Q,
                pi0,
@@ -391,83 +391,45 @@ def gen_model_zscore(stage_zscore,
 def gen_model_mixture(N_biomarkers):    
     return np.array([np.random.permutation(N_biomarkers)]).astype(float)
 
-def gen_model_mixture_block(N_biomarkers, N_groups=2):
-    ####
-    #### if 1 event / group, should return same likelihood as original non-block model
-    ####
-    #Q: calculate likelihood in 1 or 2 operations?
-    #1: i) operate on data likelihood to group and order terms according to G and S (i.e., sparsity inducing transform on data likelihood matrices)
-    ### no - because you would need every permutation within each group (I think)
-    #2: i) operate on data likelihood to group terms according to G (i.e, change shape of data likelihood from (,N_biomarkers) to (,N_groups))
-    ### e.g., [1, 2, 3] (shape: (1,3)) --> [[1, 2], [3]] (shape (inhomogeneous): (1,2,N_per_group))    
-    #2: ii) operate on i) to order terms according to S
-    
-    S_rnd = np.random.permutation(N_groups).astype(int)
-    S_mat = np.zeros((N_groups, N_groups))
-    for i in range(N_groups):
-        S_mat[i, S_rnd[i]] = 1
-
-    #    S_mat = np.array([[0, 1],
-    #                      [1, 0]])
-    #    S_mat = np.array([[1, 0, 0],
-    #                      [0, 1, 0],
-    #                      [0, 0, 1]])
-        
-    print (S_mat)
-    # hard group assignment
-    # randomly assign each event to a group
-    G_mat = np.zeros((N_biomarkers, N_groups))
+def gen_model_mixture_block(N_biomarkers, N_groups=2, prior_gamma_a=2, prior_gamma_b=2, prior_beta_a=2, prior_beta_b=5, soft=False):
+    # uniform prior on sequence
+    S_vec = np.random.permutation(N_groups).astype(int)
+    print ('S_vec', S_vec)
+    # convert to (hard) permutation matrix
+    # note: we don't actually use this for data generation, just S_vec
+    #    S_mat = np.zeros((N_groups, N_groups))
+    #    for i in range(N_groups):
+    #        S_mat[i, S_vec[i]] = 1        
+    #    print ('S_mat', S_mat)
+    # soft group assignment - use Dirichlet (conjugate prior for categorical distribution) for each row
+    # G_mat_soft ~ Dirichlet(alpha * Id(N_groups)), of which the parameter alpha comes from Gamma(gamma_a, gamma_b) prior
+    G_mat_soft = np.zeros((N_biomarkers, N_groups))
     for i in range(N_biomarkers):
-        g_i = np.random.randint(N_groups)
-        G_mat[i, g_i] = 1
-    # TODO: soft group assignment - use Dirichlet (conjugate prior for categorical distribution) for each row
-    # θ ~ Dirichlet(α * Id_K) distribution, of which the parameter α comes from a Gamma(a, b) prior
-
-    #    G_mat = np.array([[1, 0],
-    #                      [0, 1]])    
-    #    G_mat = np.array([[0, 0, 1],
-    #                      [0, 1, 0],
-    #                      [1, 0, 0]])
-    #    G_mat = np.array([[1, 0],
-    #                      [1, 0],
-    #                      [0, 1]])
-    
+        G_mat_soft[i] = dirichlet.rvs(gamma.rvs(prior_gamma_a, prior_gamma_b, size=N_groups))
+    print ('G_mat_soft', G_mat_soft)
+    # hard group assignment
+    G_mat_hard = np.zeros((N_biomarkers, N_groups))
+    G_mat_max = np.argmax(G_mat_soft, axis=1)
+    for i in range(N_biomarkers):
+        G_mat_hard[i, G_mat_max[i]] = 1
+    print ('G_mat_hard', G_mat_hard)
+    # sample from Beta distribution (conjugate prior of Bernoulli, binomial)
+    # B_mat ∼ Beta(beta_a , beta_b), where beta_a and beta_b are K × K matrices with all positive hyperparameters
+    # TODO: could specify individual beta_a, beta_b for each element
+    prior_beta_a_mat = np.ones((N_groups, N_groups))*prior_beta_a
+    prior_beta_b_mat = np.ones((N_groups, N_groups))*prior_beta_b
+    B_mat = beta.rvs(prior_beta_a_mat, prior_beta_b_mat)
+    # self-interactions to zero
+    B_mat[np.eye(N_groups)==1] = 0
+    print ('B_mat', B_mat)
     # A_mat ~ Bernoulli(G_mat * B_mat * G_mat^T), where B_mat is [0,1]^KxK group-group affinity / adjacency matrix
     # A_mat: symmetric affinity / adjacency matrix between events (undirected edges between node / event i and j)
-    print (G_mat)
-    """
-    p_yes = np.array([[1, 2, 3]])
-    # hard assignment
-    # FIXME: inhomogeneous shape
-    p_yes_block = [p_yes[0][G_mat.T[j]==1] for j in range(N_groups)]
-    print (p_yes_block)
-    # soft assignment
-    p_yes_block = np.array([np.multiply(p_yes[0],G_mat.T[j]) for j in range(N_groups)]).T
-    print (p_yes_block)
-    print (p_yes_block.shape, S_mat.shape)
-    # order likelihoods
-    p_yes_block = np.einsum('ij,jk->ik', p_yes_block, S_mat)
-    print (p_yes_block.T)
-    import torch
-    print (torch.tensor(p_yes_block, dtype=torch.float64))
-    quit()
-    """
-
-    # if B_mat == Id and G_mat == Id, then we recover the original EBM
-    # TODO: generate each edge probability between groups as conditional on group membership
-    # "the block matrix, each element of which represents the edge probability of two nodes, conditional on their group memberships."
-    # "This implies that the total number of edges between any two blocks i and j is a
-    # Binomial distributed random variable with mean equal to the product of Cij and the number
-    # of dyads available. For undirected and directed graphs, the latter term is NiNj /2 and NiNj , respectively."
-
-    # Cij ∼ Beta(A_ij , B_ij ), where A and B are K × K matrices with all positive hyperparameters
-
-    # sample from Beta distribution (conjugate prior of Bernoulli, binomial)
-    #    B_mat = 
-    A_mat = np.matmul(np.matmul(G_mat, B_mat), G_mat.T)
-    print (A_mat)    
-    
-    return S_rnd, G_mat, B_mat
+    if soft:
+        A_mat = bernoulli.rvs(np.matmul(np.matmul(G_mat_soft, B_mat), G_mat_soft.T))
+    else:
+        A_mat = bernoulli.rvs(np.matmul(np.matmul(G_mat_hard, B_mat), G_mat_hard.T))
+    print ('A_mat', A_mat)    
+    return S_vec, G_mat_soft, G_mat_hard, B_mat, A_mat
 
 def gen_data_mixture_block(stages,
                            groups,
@@ -492,7 +454,7 @@ def gen_data_mixture_block(stages,
     data_denoised = []
     for i in range(len(stages)):
         data_denoised.append(np.zeros((N_biomarkers, len(stages[i]))))
-    #loop over all subjects, generating observations for each biomarker based on what subtype and stage they're in
+    #loop over all subjects, generating observations for each biomarker based on what group and stage they're in
     for i in range(N_subjects):
         stage_i = stages[i]
         for t in range(len(stage_i)):
