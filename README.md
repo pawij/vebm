@@ -1,7 +1,11 @@
 # Variational Event-Based Model (vEBM)
-The vEBM is a probabilistic disease progression model that leverages optimal transport to scale to large feature sets, enabling rapid, low-compute inference of fine-grained multi-modal trajectories. It can also use any combination of multi-modal features, not just neuroimaging, e.g., clinical test scores, biofluid, genomic.
+The vEBM is a probabilistic disease progression model that leverages optimal transport to scale to large feature sets, enabling rapid, low-compute inference of fine-grained multi-modal trajectories. It can also use any combination of multi-modal features, not just neuroimaging, e.g., clinical test scores, biofluids, genomics.
 
-# Paper
+# Code
+
+Code will be released on 2nd June 2026, accompanied by a bioRxiv pre-print detailing its use in MRI and PET data in Alzheimer's disease.
+
+# Papers
 
 If you use the vEBM please cite this paper:
 
