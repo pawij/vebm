@@ -1,5 +1,7 @@
 # Variational Event-Based Model (vEBM)
 
+# NOTE: this code will be deprecated soon. The new version, Latent Event Mapping (LEMING), will be found on the lab website here: https://github.com/lililab-sussex/leming/ 
+
 The vEBM is a probabilistic disease progression model that leverages 
 optimal transport to scale to large feature sets, enabling rapid, 
 low-compute inference of fine-grained multi-modal trajectories. It can 
