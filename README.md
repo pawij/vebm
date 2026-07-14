@@ -20,7 +20,7 @@ https://doi.org/10.48550/arXiv.2410.14388
 Install directly from GitHub using pip:
 
 ```bash
-pip install git+https://github.com/pawij/birkhoff.git
+pip install git+https://github.com/pawij/vebm.git
 ```
 
 ### Dependencies
