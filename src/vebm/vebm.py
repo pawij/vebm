@@ -91,7 +91,7 @@ class VEBM(BaseEstimator):
                          means_init=np.array([np.nanmean(X_i[y_i==0]), np.nanmean(X_i[y_i==1])]).reshape(2,1),
                          precisions_init=np.array([1/np.nanstd(X_i[y_i==0])**2, 1/np.nanstd(X_i[y_i==1])**2]).reshape(2,1),
                          weights_init=np.array([0.5,0.5]))
-                mm.fit(X_i.reshape(-1, 1))
+                mm.fit(X_i[(y_i == 0).astype(bool) + (y_i == 1).astype(bool)].reshape(-1, 1))
                 thetas.append([mm.means_[0][0], np.sqrt(mm.covariances_[0][0]),
                                mm.means_[1][0], np.sqrt(mm.covariances_[1][0]),
                                mm.weights_[0]])
